@@ -1,0 +1,46 @@
+# Flutter / Dart
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+farmcam_env/
+*.egg-info/
+dist/
+.eggs/
+
+# Secrets / env
+.env
+*.env.local
+
+# Database and data (never commit production data)
+rpi_server/data/
+rpi_server/detection_logs.db
+farmcam.db
+
+# HEF models (binary, large — store separately)
+*.hef
+
+# PyTorch models (large binaries)
+*.pt
+*.onnx
+
+# IDE
+.idea/
+*.swp
+*.swo
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
