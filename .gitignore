@@ -42,5 +42,8 @@ farmcam.db
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs & Temp
 *.log
+tmp/
+output/
+.metadata

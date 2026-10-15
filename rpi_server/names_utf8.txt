@@ -1,0 +1,1 @@
+{0: 'fungus', 1: 'whiteflies', 2: 'worm'}

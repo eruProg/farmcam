@@ -9,6 +9,7 @@ import '../widgets/lettuce_card.dart';
 import '../widgets/mjpeg_viewer.dart';
 import '../widgets/scan_status_card.dart';
 import '../widgets/cooldown_chip.dart';
+import 'about_screen.dart';
 import 'lettuce_detail_screen.dart';
 import 'logs_screen.dart';
 
@@ -56,6 +57,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   int _pumpSession = 0;
   Timer? _heartbeat;
 
+  // Cooldown / buzzer state
+  double _pumpCooldownRemaining = 0;
+  double _pumpCooldownTotal     = 300;
+  double _smsCooldownRemaining  = 0;
+  double _smsCooldownTotal      = 300;
+  bool   _buzzerMuted           = false;
+
   @override
   void initState() {
     super.initState();
@@ -98,6 +106,20 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         // dashboard, instead of the 3-4 rebuilds this used to trigger per
         // poll tick (see AppState.applyPollResult for why).
         _appState.applyPollResult(newStations: stations, info: sysInfo, pumpData: pump);
+      } catch (_) {}
+      // Poll cooldown status every 3 s (lighter weight)
+      try {
+        final cd = await _api.getCooldownStatus();
+        if (cd != null && mounted) {
+          setState(() {
+            final pump = cd['pump'] as Map? ?? {};
+            final sms  = cd['sms']  as Map? ?? {};
+            _pumpCooldownRemaining = (pump['remaining_s'] as num? ?? 0).toDouble();
+            _pumpCooldownTotal     = (pump['total_s']     as num? ?? 300).toDouble();
+            _smsCooldownRemaining  = (sms['remaining_s']  as num? ?? 0).toDouble();
+            _smsCooldownTotal      = (sms['total_s']      as num? ?? 300).toDouble();
+          });
+        }
       } catch (_) {}
       await Future.delayed(const Duration(seconds: 2));
       return mounted;
@@ -264,6 +286,29 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           child: const Text('DEMO', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: _amber, letterSpacing: 0.8)),
                         ),
                       const SizedBox(width: 8),
+                      // Buzzer mute toggle
+                      if (!widget.demoMode)
+                        GestureDetector(
+                          onTap: () async {
+                            final muted = !_buzzerMuted;
+                            final ok = await _api.setBuzzerMute(muted);
+                            if (ok && mounted) setState(() => _buzzerMuted = muted);
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: _buzzerMuted ? _amberBg : _card,
+                              borderRadius: BorderRadius.circular(9),
+                              border: Border.all(color: _buzzerMuted ? _amber.withOpacity(0.5) : _border),
+                            ),
+                            child: Icon(
+                              _buzzerMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                              size: 18,
+                              color: _buzzerMuted ? _amber : _muted,
+                            ),
+                          ),
+                        ),
+                      const SizedBox(width: 6),
                       // Detect photo button
                       if (!widget.demoMode)
                         GestureDetector(
@@ -284,6 +329,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(color: _card, borderRadius: BorderRadius.circular(9), border: Border.all(color: _border)),
                           child: const Icon(Icons.list_alt_rounded, size: 18, color: _fg),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      // About button
+                      GestureDetector(
+                        onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => AboutScreen(api: _api),
+                        )),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(color: _card, borderRadius: BorderRadius.circular(9), border: Border.all(color: _border)),
+                          child: const Icon(Icons.info_outline_rounded, size: 18, color: _muted),
                         ),
                       ),
                     ],
@@ -430,6 +487,28 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                   api: _api,
                   demoMode: widget.demoMode,
                 ),
+
+                // ── Cooldown chips row
+                if (!widget.demoMode)
+                  Padding(
+                    key: const ValueKey('cooldown_row'),
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                    child: Row(
+                      children: [
+                        CooldownChip(
+                          label: 'Pump',
+                          remainingS: _pumpCooldownRemaining,
+                          totalS: _pumpCooldownTotal,
+                        ),
+                        const SizedBox(width: 8),
+                        CooldownChip(
+                          label: 'SMS',
+                          remainingS: _smsCooldownRemaining,
+                          totalS: _smsCooldownTotal,
+                        ),
+                      ],
+                    ),
+                  ),
 
                 // ── Section label
                 const Padding(
