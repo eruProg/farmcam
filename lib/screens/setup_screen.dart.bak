@@ -1,0 +1,830 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../data/app_state.dart';
+import '../services/api_service.dart';
+import 'dashboard_screen.dart';
+
+class SetupScreen extends StatefulWidget {
+  const SetupScreen({super.key});
+
+  @override
+  State<SetupScreen> createState() => _SetupScreenState();
+}
+
+class _SetupScreenState extends State<SetupScreen>
+    with SingleTickerProviderStateMixin {
+  final _ssidCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
+  final _ipCtrl = TextEditingController(text: '192.168.');
+  final _portCtrl = TextEditingController(text: '8000');
+
+  bool _showPassword = false;
+  bool _connecting = false;
+  String _status = '';
+  String _error = '';
+  int _currentStep = 0; // 0 = choose mode, 1 = first-time, 2 = quick connect
+
+  late final AnimationController _pulseCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+    _loadLastIp();
+  }
+
+  Future<void> _loadLastIp() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastIp = prefs.getString('last_rpi_ip');
+    final lastPort = prefs.getString('last_rpi_port');
+    if (lastIp != null && lastIp.isNotEmpty) {
+      setState(() {
+        _ipCtrl.text = lastIp;
+        if (lastPort != null) _portCtrl.text = lastPort;
+        _currentStep = 2; // Auto-jump to Quick Connect if we have a saved IP
+      });
+    }
+  }
+
+  Future<void> _saveLastIp(String ip, String port) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('last_rpi_ip', ip);
+    await prefs.setString('last_rpi_port', port);
+  }
+
+  @override
+  void dispose() {
+    _ssidCtrl.dispose();
+    _passCtrl.dispose();
+    _ipCtrl.dispose();
+    _portCtrl.dispose();
+    _pulseCtrl.dispose();
+    super.dispose();
+  }
+
+  // ─── First Time Tutorial Dialog ──────────────────────────────
+  void _showSetupTutorial() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A2620),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.wifi_tethering_rounded, color: Color(0xFF4ADE80)),
+            SizedBox(width: 10),
+            Text('Farm Hotspot Setup', style: TextStyle(color: Color(0xFFE8F5E9), fontSize: 18)),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('The RPi5 is permanently hardcoded to look for a specific mobile hotspot. Configure your phone now:', 
+                 style: TextStyle(color: Color(0xFF8BB98E), fontSize: 13, height: 1.5)),
+            SizedBox(height: 16),
+            _GuideStep(number: '1', text: 'Open Phone Settings'),
+            _GuideStep(number: '2', text: 'Go to Mobile Hotspot'),
+            _GuideStep(number: '3', text: 'Change Network Name to:\nFarmCam'),
+            _GuideStep(number: '4', text: 'Change Password to:\nfarmcam1'),
+            _GuideStep(number: '5', text: 'Turn Hotspot ON'),
+            _GuideStep(number: '6', text: 'Power on RPi5 - it connects instantly!'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _currentStep = 2); // Jump to Quick Connect
+            },
+            child: const Text('I\'ve Done This', style: TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── Quick Connect: already on same network ──────────────────
+  Future<void> _quickConnect() async {
+    final ip = _ipCtrl.text.trim();
+    final port = int.tryParse(_portCtrl.text.trim()) ?? 8000;
+
+    if (ip.isEmpty || ip == '192.168.') {
+      setState(() => _error = 'Enter the RPi5 IP address');
+      return;
+    }
+
+    setState(() {
+      _connecting = true;
+      _status = 'Connecting to $ip:$port...';
+      _error = '';
+    });
+
+    final appState = AppState();
+    appState.setConnection(ip, port);
+    final api = ApiService(appState);
+
+    setState(() => _status = 'Pinging RPi5...');
+    final reachable = await api.ping();
+
+    if (!reachable) {
+      setState(() {
+        _connecting = false;
+        _error =
+            'RPi5 not reachable at $ip:$port\n\n'
+            'Make sure:\n'
+            '• Phone hotspot is ON\n'
+            '• RPi5 is powered on and connected to your hotspot\n'
+            '• IP address is correct';
+        _status = '';
+      });
+      return;
+    }
+
+    setState(() => _status = 'Connected! Loading dashboard...');
+    await _saveLastIp(ip, _portCtrl.text.trim());
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    if (!mounted) return;
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => DashboardScreen(rpiIp: ip, rpiPort: port),
+      ),
+    );
+  }
+
+  void _enterDemoMode() {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => const DashboardScreen(demoMode: true),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0B1410),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          children: [
+            const SizedBox(height: 16),
+
+            // ─── Logo ──────────────────────────────────────
+            Center(
+              child: AnimatedBuilder(
+                animation: _pulseCtrl,
+                builder: (_, __) {
+                  final glow = 0.1 + _pulseCtrl.value * 0.15;
+                  return Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(22),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF22C55E)
+                              .withValues(alpha: glow),
+                          blurRadius: 32,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(22),
+                      child: Image.asset(
+                        'assets/icon/farmcam_logo.png',
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Center(
+              child: Text('FarmCam',
+                  style: TextStyle(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFFE8F5E9),
+                    letterSpacing: -1,
+                  )),
+            ),
+            const SizedBox(height: 4),
+            const Center(
+              child: Text('Lettuce Pest & Fungus Detection',
+                  style: TextStyle(
+                      fontSize: 13, color: Color(0xFF6B8A72))),
+            ),
+
+            const SizedBox(height: 28),
+
+            // ─── Mode Selector ────────────────────────────
+            if (_currentStep == 0) ...[
+              // Choose setup mode
+              _ModeCard(
+                icon: Icons.wifi_tethering_rounded,
+                title: 'First Time Setup',
+                subtitle:
+                    'Configure your phone so RPi5\ncan connect automatically.',
+                color: const Color(0xFF4ADE80),
+                onTap: _showSetupTutorial,
+              ),
+              const SizedBox(height: 12),
+              _ModeCard(
+                icon: Icons.bolt_rounded,
+                title: 'Quick Connect',
+                subtitle:
+                    'Already set up? Just enter the RPi5 IP\nand connect directly.',
+                color: const Color(0xFF6B8AFE),
+                onTap: () => setState(() => _currentStep = 2),
+              ),
+              const SizedBox(height: 12),
+              // NEW: Dataset Mode
+              _ModeCard(
+                icon: Icons.camera_alt_rounded,
+                title: 'Dataset Collection',
+                subtitle:
+                    'Home WiFi testing mode.',
+                color: const Color(0xFFF59E0B),
+                onTap: () => setState(() {
+                  _ipCtrl.text = '192.168.'; 
+                  _currentStep = 2; 
+                }),
+              ),
+
+              const SizedBox(height: 20),
+              Center(
+                child: TextButton.icon(
+                  onPressed: _enterDemoMode,
+                  icon: const Icon(Icons.play_circle_outline_rounded,
+                      size: 18),
+                  label: const Text('Demo Mode',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF4A6B4E),
+                  ),
+                ),
+              ),
+            ],
+
+            // ─── Quick Connect Form ──────────────────────
+            if (_currentStep == 2) ...[
+              _BackButton(
+                  onTap: () => setState(() {
+                        _currentStep = 0;
+                        _error = '';
+                        _status = '';
+                      })),
+              const SizedBox(height: 12),
+
+              _StepBanner(
+                icon: Icons.bolt_rounded,
+                title: 'Quick Connect',
+                subtitle:
+                    'Enter the RPi5 IP address.\nMake sure your hotspot is ON.',
+                color: const Color(0xFF6B8AFE),
+              ),
+
+              const SizedBox(height: 20),
+
+              const _SectionLabel(label: 'RPi5 ADDRESS'),
+              const SizedBox(height: 10),
+              _InputField(
+                controller: _ipCtrl,
+                label: 'RPi5 IP Address',
+                hint: '192.168.x.x',
+                icon: Icons.router_rounded,
+                keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _InputField(
+                controller: _portCtrl,
+                label: 'Port',
+                hint: '8000',
+                icon: Icons.settings_ethernet_rounded,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              ),
+
+              const SizedBox(height: 20),
+              _statusError(),
+              _ActionButton(
+                label: 'Connect',
+                icon: Icons.power_settings_new_rounded,
+                color: const Color(0xFF6B8AFE),
+                loading: _connecting,
+                onPressed: _connecting ? null : _quickConnect,
+              ),
+
+              const SizedBox(height: 12),
+              Center(
+                child: TextButton.icon(
+                  onPressed: _enterDemoMode,
+                  icon: const Icon(Icons.play_circle_outline_rounded,
+                      size: 16),
+                  label: const Text('Demo Mode',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 13)),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF4A6B4E),
+                  ),
+                ),
+              ),
+            ],
+
+            // ─── Dataset Collection Form ────────────────────
+            if (_currentStep == 3) ...[
+              _BackButton(
+                  onTap: () => setState(() {
+                        _currentStep = 0;
+                        _error = '';
+                        _status = '';
+                      })),
+              const SizedBox(height: 12),
+
+              _StepBanner(
+                icon: Icons.camera_alt_rounded,
+                title: 'Dataset Collection',
+                subtitle:
+                    'Ensure your phone is connected to\nthe RPi5 WiFi or Hotspot.',
+                color: const Color(0xFFF59E0B),
+              ),
+
+              const SizedBox(height: 20),
+
+              const _SectionLabel(label: 'RPI5 CONNECTION'),
+              const SizedBox(height: 10),
+              _InputField(
+                controller: _ipCtrl,
+                label: 'RPi5 IP Address',
+                hint: '192.168.4.1 (Default for Setup WiFi)',
+                icon: Icons.router_rounded,
+                keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _InputField(
+                controller: _portCtrl,
+                label: 'Port',
+                hint: '8000',
+                icon: Icons.settings_ethernet_rounded,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              ),
+
+              const SizedBox(height: 20),
+              _statusError(),
+              _ActionButton(
+                label: 'Start Camera',
+                icon: Icons.camera_outlined,
+                color: const Color(0xFFF59E0B),
+                loading: _connecting,
+                onPressed: _connecting ? null : _quickConnect,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statusError() {
+    return Column(
+      children: [
+        if (_status.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Color(0xFF4ADE80),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(_status,
+                      style: const TextStyle(
+                        color: Color(0xFF4ADE80),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      )),
+                ),
+              ],
+            ),
+          ),
+        if (_error.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF3B1515),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF5D2020)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Icon(Icons.error_outline,
+                        size: 16, color: Color(0xFFEF4444)),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(_error,
+                        style: const TextStyle(
+                          color: Color(0xFFEF4444),
+                          fontSize: 12,
+                          height: 1.5,
+                        )),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  REUSABLE WIDGETS
+// ═══════════════════════════════════════════════════════════════════
+
+class _BackButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _BackButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A2620),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.arrow_back_rounded,
+                  size: 16, color: Color(0xFF6B8A72)),
+              SizedBox(width: 6),
+              Text('Back',
+                  style: TextStyle(
+                    color: Color(0xFF6B8A72),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  )),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ModeCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A2620),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color.withValues(alpha: 0.2)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(icon, size: 24, color: color),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: color,
+                        letterSpacing: -0.3,
+                      )),
+                  const SizedBox(height: 4),
+                  Text(subtitle,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF6B8A72),
+                        height: 1.4,
+                      )),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded,
+                color: color.withValues(alpha: 0.5)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StepBanner extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color color;
+
+  const _StepBanner({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.color = const Color(0xFF4ADE80),
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 28, color: color),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: color,
+                    )),
+                const SizedBox(height: 4),
+                Text(subtitle,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF8BB98E),
+                      height: 1.4,
+                    )),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool loading;
+  final Color color;
+  final VoidCallback? onPressed;
+
+  const _ActionButton({
+    required this.label,
+    required this.icon,
+    this.loading = false,
+    this.color = const Color(0xFF22C55E),
+    this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 52,
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: color.withValues(alpha: 0.3),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          elevation: 0,
+        ),
+        child: loading
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2.5, color: Colors.white),
+              )
+            : Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, size: 20),
+                  const SizedBox(width: 8),
+                  Text(label,
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w800)),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+class _SectionLabel extends StatelessWidget {
+  final String label;
+  const _SectionLabel({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(label,
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          color: Color(0xFF4ADE80),
+          letterSpacing: 1.2,
+        ));
+  }
+}
+
+class _InputField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final String hint;
+  final IconData icon;
+  final bool obscure;
+  final Widget? suffix;
+  final TextInputType? keyboardType;
+  final List<TextInputFormatter>? inputFormatters;
+
+  const _InputField({
+    required this.controller,
+    required this.label,
+    required this.hint,
+    required this.icon,
+    this.obscure = false,
+    this.suffix,
+    this.keyboardType,
+    this.inputFormatters,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      obscureText: obscure,
+      keyboardType: keyboardType,
+      inputFormatters: inputFormatters,
+      style: const TextStyle(
+          color: Color(0xFFE8F5E9), fontSize: 15, fontWeight: FontWeight.w600),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle:
+            const TextStyle(color: Color(0xFF3D5C42), fontWeight: FontWeight.w400),
+        labelText: label,
+        labelStyle: const TextStyle(
+            color: Color(0xFF6B8A72), fontSize: 13, fontWeight: FontWeight.w600),
+        prefixIcon: Icon(icon, size: 20, color: const Color(0xFF4A6B4E)),
+        suffixIcon: suffix,
+        filled: true,
+        fillColor: const Color(0xFF111E16),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF1E3326)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF1E3326)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF22C55E), width: 1.5),
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      ),
+    );
+  }
+}
+
+class _InfoBox extends StatelessWidget {
+  final List<Widget> children;
+  const _InfoBox({required this.children});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111E16),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF1E3326)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(children: [
+            Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFF4A6B4E)),
+            SizedBox(width: 8),
+            Text('How It Works',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF8BB98E))),
+          ]),
+          const SizedBox(height: 10),
+          ...children,
+        ],
+      ),
+    );
+  }
+}
+
+class _GuideStep extends StatelessWidget {
+  final String number;
+  final String text;
+
+  const _GuideStep({required this.number, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 20,
+            height: 20,
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E3326),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Center(
+              child: Text(number,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF4ADE80),
+                  )),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(text,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF6B8A72),
+                  height: 1.3,
+                )),
+          ),
+        ],
+      ),
+    );
+  }
+}
