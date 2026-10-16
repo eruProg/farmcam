@@ -21,7 +21,7 @@ git status --short
 git pull --ff-only origin master
 ```
 
-If Git reports local changes or a divergent branch, stop and preserve those changes; do not reset or force-pull. If your Pi only has a copied server folder, download the updated repository and copy the updated rpi_server source into the existing service folder while keeping its models/, data/, detection_logs.db, farmcam_env/, and private environment settings. This repository is private: use your authorized GitHub account to fetch it.
+If Git reports local changes or a divergent branch, stop and preserve those changes; do not reset or force-pull. If your Pi only has a copied server folder, download the updated repository and copy the updated rpi_server source into the existing service folder while keeping its models/, data/, detection_logs.db, farmcam_env/, and private environment settings. The repository is public; no GitHub sign-in is required to download it.
 
 Use the service's existing virtual environment. The commands below assume the supplied farmcam_env layout:
 
@@ -81,3 +81,4 @@ This APK is release-mode and signed with a dedicated local FarmCam key. If Andro
 The UI implementation is complete and has been checked on phone/tablet layouts, enlarged text, disconnected states, and failed requests. It still needs a real-phone check against the live Pi stream.
 
 This update improves frame attribution, filtering, persistence, and actuation behavior. It does not retrain or change the frozen inference functions. No new model accuracy percentage is claimed. Verify camera distance/focus, station ROIs, lighting, class labels, and known healthy/pest/fungus examples. Review detections in the app; its precision display uses user-reviewed tracks and does not measure missed detections or full model accuracy. Follow HARDWARE_ACCEPTANCE.md and record results before relying on automatic operation.
+
