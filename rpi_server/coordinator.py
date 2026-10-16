@@ -52,7 +52,8 @@ def get_shared_state():
     with _lock:
         return dict(scan_sm=_scan_sm, db=_db, cooldown_mgr=_cooldown_mgr,
                     sms_broker=_sms_broker, buzzer_scheduler=_buzzer,
-                    fault=_fault, pump_active=bool(_runtime and _runtime.pump_active))
+                    fault=_fault, ready=_wired,
+                    pump_active=bool(_runtime and _runtime.pump_active))
 
 
 def scan_state():

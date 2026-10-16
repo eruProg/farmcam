@@ -47,6 +47,10 @@ October 16 release preparation: dedicated-key signed Android release APK 1.0.0 (
 
 ## Pending connected-device acceptance
 
+The automatic HDMI display has been added as an independent, read-only service with desktop kiosk startup. See rpi_server/docs/HDMI_DISPLAY.md for installation and its additional pending hardware checks. It does not require another Android APK or ESP32 firmware change.
+
+HDMI software verification: **79 Python tests passed**, including prior regressions and frozen inference hashes. Browser state/layout checks passed at **1024×600, 1280×800, and 1920×1080**, including **125% typography**. Synthetic-fixture screenshots are in .verification/display/. Installer file-generation/rerun/restoration is tested; installation on the actual Pi, boot recovery, idle inhibition, and performance remain unverified until hardware acceptance.
+
 - [ ] Run the full physical scan cycle and verify motor/camera alignment.
 - [ ] Verify actual Pi camera/Hailo inference, restart recovery, and persisted detections against representative targets.
 - [ ] Verify pump release, manual priority, heartbeat loss, and relay acknowledgement on the connected rig.

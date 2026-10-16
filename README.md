@@ -52,4 +52,6 @@ Flutter tests include pump release during a pending request, API error handling,
 
 For the coordinated Pi, ESP32, and Android update, follow [Upgrade instructions](rpi_server/docs/UPGRADE.md).
 
+For the non-touch HDMI monitor, follow [Automatic display setup](rpi_server/docs/HDMI_DISPLAY.md). It opens a read-only overview at boot and keeps a waiting/reconnection screen available independently of detection.
+
 See [System overview](rpi_server/docs/SYSTEM_OVERVIEW.md), [Hardware acceptance](rpi_server/docs/HARDWARE_ACCEPTANCE.md), and [Completion status](missing.md).

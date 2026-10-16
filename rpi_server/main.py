@@ -280,6 +280,8 @@ camera = None
 current_frame = None
 frame_sequence = 0
 frame_timestamp = 0.0
+from display_health import DisplayHealth
+display_health = DisplayHealth()
 stop_event = threading.Event()
 worker_threads = []
 instance_lock_file = None
@@ -1654,7 +1656,7 @@ def capture_frames():
                 stop_event.wait(1.0)
         stop_event.wait(0.033)
 
-def generate_mjpeg():
+def generate_mjpeg(max_width=None, fps=None, show_diagnostics=True):
     while True:
         with frame_lock:
             frame = current_frame.copy() if current_frame is not None else None
@@ -1729,8 +1731,11 @@ def generate_mjpeg():
                     f"objs:{len(display_detections)} max:{_infer_debug.get('max_score', 0):.2f} "
                     f"{current_state} S{active_station_id}"
                 )
-                cv2.rectangle(frame, (8, 8), (8 + 12 * len(hud), 36), (0, 0, 0), -1)
-                cv2.putText(frame, hud, (14, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 180), 1, cv2.LINE_AA)
+                if show_diagnostics:
+                    cv2.rectangle(frame, (8, 8), (8 + 12 * len(hud), 36), (0, 0, 0), -1)
+                    cv2.putText(frame, hud, (14, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 180), 1, cv2.LINE_AA)
+                if max_width and frame.shape[1] > max_width:
+                    frame = cv2.resize(frame, (max_width, round(frame.shape[0] * max_width / frame.shape[1])))
                 _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
             except Exception as e:
@@ -1740,11 +1745,13 @@ def generate_mjpeg():
                 blank = np.zeros((960, 1280, 3), dtype=np.uint8)
                 cv2.putText(blank, "FARMCAM - WAITING FOR CAMERA", (300, 480),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2)
+                if max_width and blank.shape[1] > max_width:
+                    blank = cv2.resize(blank, (max_width, round(blank.shape[0] * max_width / blank.shape[1])))
                 _, jpeg = cv2.imencode('.jpg', blank)
                 yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
             except Exception as e:
                 print(f"⚠️  Skipped blank placeholder frame: {e}")
-        time.sleep(0.066)
+        time.sleep(1.0 / fps if fps else 0.066)
 
 def generate_raw_mjpeg():
     while True:
@@ -1875,6 +1882,7 @@ def detect_loop():
     _reset_window_best()
     while not stop_event.is_set():
         try:
+            display_health.tick()
             coordinator.tick()
 
             with frame_lock:
@@ -2273,6 +2281,19 @@ async def api_stream():
 @app.get("/api/stations")
 async def api_stations():
     return list(stations_data.values())
+
+
+@app.get("/api/display/health")
+def api_display_health():
+    with frame_lock:
+        timestamp, present = frame_timestamp, current_frame is not None
+    return display_health.snapshot(timestamp, present, coordinator.get_shared_state())
+
+
+@app.get("/api/display/stream")
+async def api_display_stream():
+    return StreamingResponse(generate_mjpeg(max_width=960, fps=8, show_diagnostics=False),
+                             media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.get("/api/system")
 async def api_system():

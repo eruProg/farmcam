@@ -2,6 +2,8 @@
 
 These checks require the actual Pi, camera, Hailo models, ESP32, pump, buzzer, and SIM800L. Automated tests do not establish physical operation.
 
+For the HDMI monitor, also complete the boot, offline operation, recovery, blanking, and inference-performance checks in [HDMI_DISPLAY.md](HDMI_DISPLAY.md). Those physical display checks are pending until performed on the connected rig.
+
 - Back up the existing databases and service environment. Install the updated client/server together and flash the canonical ESP32 sketch with the correct network settings.
 - Verify the Pi can reach ESP32 `/status` and `/sms/status?id=probe`; record the boot ID. Confirm GPIO 26 drives the buzzer and GPIO 27 drives the relay.
 - Start with the camera at station 1 upper position. Observe a full four-station cycle: 30-second upper/lower windows, separate five-second down/up movement, one-second settling, ten-second moves, and the fifteen-second return after station 4. Record the actual nominal 333-second cycle and mechanical alignment.

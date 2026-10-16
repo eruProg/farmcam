@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FarmCam Monitor</title>
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/display.css">
+  <script src="/assets/display.js" defer></script>
+</head>
+<body>
+  <main class="dashboard">
+    <header class="header">
+      <div class="brand"><img src="/assets/logo.svg" alt=""><span>FarmCam</span><span class="brand-label">Monitor</span></div>
+      <div id="connection" class="connection" role="status"><span class="status-dot"></span><span id="status">Waiting for system</span></div>
+      <time id="clock" class="clock">—</time>
+    </header>
+    <section class="overview" aria-label="Live monitoring">
+      <div class="camera-column">
+        <div class="camera">
+          <img id="camera" alt="Live lettuce camera with verified detections" hidden>
+          <div id="camera-label" class="camera-label" hidden><span></span>Live camera</div>
+          <div id="camera-cover" class="camera-cover">
+            <svg width="44" height="44" viewBox="0 0 48 48" aria-hidden="true"><path d="M8 12h8l4-5h8l4 5h8v28H8z"/><circle cx="24" cy="25" r="8"/></svg>
+            <p id="camera-message">Waiting for the system to start…</p>
+          </div>
+        </div>
+        <div class="scan-strip">
+          <div class="scan-top"><span id="scan-label">Waiting for scan</span><span id="countdown">—</span></div>
+          <progress id="scan-progress" max="1" value="0" aria-label="Scan phase progress"></progress>
+        </div>
+      </div>
+      <section class="stations" aria-labelledby="station-heading">
+        <div class="section-heading"><h1 id="station-heading">Lettuce stations</h1><span id="freshness">Awaiting data</span></div>
+        <div id="stations" class="station-list"></div>
+      </section>
+    </section>
+    <section class="history" aria-labelledby="history-heading">
+      <div class="section-heading"><h2 id="history-heading">Recent detections</h2><span id="log-freshness">Confirmed records</span></div>
+      <div class="history-head" aria-hidden="true"><span>Time</span><span>Station</span><span>Detection</span><span>Status</span></div>
+      <div id="logs" class="log-list"></div>
+      <p id="logs-message" class="empty-state">Waiting for detection history</p>
+    </section>
+    <footer class="equipment" aria-label="Equipment status">
+      <span>Pump <strong id="pump">Unavailable</strong></span>
+      <span>Buzzer <strong id="buzzer">Unavailable</strong></span>
+      <span>SMS <strong id="sms">Unavailable</strong></span>
+      <span id="update-time" class="update-time">Local monitoring</span>
+    </footer>
+  </main>
+</body>
+</html>
