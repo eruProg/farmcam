@@ -1,176 +1,57 @@
-# FarmCam: What is Missing & Left To Do
+# FarmCam completion status
 
-> **Date:** October 15, 2026  
-> **Target System:** FarmCam (Raspberry Pi 5 + Hailo-8L + ESP32 SIM800L + Flutter Client)  
-> **Status:** Active Implementation — Modules, Coordinator, Extensions & UI Components Created; Wireup & Tests Pending
+Verified on October 15, 2026. Software implementation and local checks are complete; connected-hardware acceptance remains pending.
 
----
+October 16 release preparation: dedicated-key signed Android release APK 1.0.0 (build 2) built and signature-verified. Upgrade instructions are in rpi_server/docs/UPGRADE.md. Private device settings and signing keys are excluded from Git.
 
-## Executive Summary
+## Backend and hardware integration
 
-The core modular architecture for the overhaul has been completed:
-- `rpi_server/scan_state.py`: 7-phase scan cycle state machine with transit/settle suppression.
-- `rpi_server/verifier.py`: 5-gate detection verification filter (confidence, size/aspect ratio, skin rejection, whitefly green-ring, temporal drift).
-- `rpi_server/persistence.py`: SQLite WAL persistence with rescan merge IoU tracking and `CooldownManager`.
-- `rpi_server/buzzer.py`: Edge-triggered, coalescing buzzer scheduler with duty-cycle protections.
-- `rpi_server/sms_broker.py`: Queue-based non-blocking SMS client targeting the ESP32 v3.0 firmware.
-- `rpi_server/snapshot_writer.py`: Threaded background snapshot & thumbnail writer.
-- `rpi_server/coordinator.py`: Master integration glue created to hook all modules cleanly into `main.py` without touching frozen inference functions.
-- `rpi_server/api_extensions.py`: Full set of 10 extension API endpoints implemented.
-- `lib/screens/about_screen.dart`: Complete system configuration viewer.
-- `lib/screens/dashboard_screen.dart`: Buzzer mute toggle, About button, and CooldownChip indicators added.
+- [x] Seven-phase state machine is the sole scan controller, advances without camera frames, and applies the longer return after station 4. Nominal cycle: **333 seconds**.
+- [x] Immutable capture metadata, stale-frame rejection, phase-boundary result rejection, and inference suppression during movement/settling.
+- [x] Explicit runtime dependency injection, partial-startup cleanup, repeatable shutdown, and restart recovery.
+- [x] Accumulate complete detection windows, commit once, resolve valid empty rescans, and abort incomplete windows without clearing previous tracks.
+- [x] Correct persistence contracts, one-to-one track matching, real track-ID snapshots, and restored station summaries.
+- [x] Atomic persisted pump/SMS cooldowns with 300-second defaults. Existing spray evidence, manual priority, heartbeat timeout, and confirmed pump acknowledgements retained.
+- [x] Coalesced ESP32 GPIO 26 buzzer pulses, mute cancellation, duty limits, and removal of duplicate automatic buzzer triggers.
+- [x] Verifier failures disable automatic actuation.
+- [x] Canonical v3 firmware supports correlated HTTP SMS status, retained-ID deduplication, boot IDs, bounded retries after definite queue rejection, and distinct queued/sent/failed/unknown outcomes.
 
-**Current Primary Blocker:** The coordinator must be wired into `rpi_server/main.py` (at startup and in `detect_loop`), `api_service.dart` needs its missing helper methods, and brand assets, tests, and documentation remain to be written.
+## API and client
 
-Below is the updated inventory of completed vs. remaining tasks across all subsystems.
+- [x] One authoritative paginated /api/logs route; legacy history/detections routes retained.
+- [x] All ten extension endpoint families connected, including filters, false-positive marking, cooldowns, configuration, SMS, precision, and restricted snapshot serving. Added explicit correct-track review.
+- [x] Missing Flutter API methods restored; scan polling uses /api/scan/state; request errors surface and failed mute changes roll back.
+- [x] Shared monotonic scan timing with midpoint EWMA offset, restart/reconnection reset, serialized polling, and stale-response rejection.
+- [x] Logs, snapshots, filtering, pagination, cooldowns, About, SMS test/status, and precision based on user markings.
+- [x] Stone/charcoal/green styling, bundled typography, responsive layouts, and enlarged-text checks. Phone station tiles use one column with enlarged text.
 
----
+## Branding and documentation
 
-## 1. Backend: Wiring in `rpi_server/main.py`
+- [x] Leaf/scan-frame SVG logo, wordmark, favicon, and 32/180/192/512-pixel PNGs.
+- [x] Registered assets; generated Android/iOS launcher icons and web icons.
+- [x] Bundled Inter with its OFL license.
+- [x] Starter README replaced; system overview covers architecture, 333-second formula, verifier gates, persistence, protocol, wiring, setup, and troubleshooting.
+- [x] Existing databases and legacy history preserved. Historical summaries are not converted into fabricated track geometry.
 
-`coordinator.py` has been authored to wrap and coordinate all new modules while strictly preserving the frozen inference path (`postprocess_yolov8`, Hailo NMS decoding, etc.). The hook points into `main.py` are:
+## Verified results
 
-- [ ] **Startup Wireup:**
-  - Call `coordinator.wire(app)` inside `startup()` (immediately after `init_db()`).
-  - This initializes `PersistenceDB`, `CooldownManager`, `SnapshotWriter`, `SmsBroker`, `BuzzerScheduler`, `DetectionVerifier`, and `ScanStateMachine`, and registers all `api_extensions.py` endpoints on `app`.
-- [ ] **State Machine & Timing Hook (`detect_loop`):**
-  - Call `coordinator.tick()` once per loop iteration to step the state machine, maintain scan records, and synchronize legacy globals (`current_state`, `active_station_id`).
-  - Flush the frame queue (`frame_queue.queue.clear()`) across phase transitions so stale transit frames are discarded.
-  - Settle window gate (`SETTLE_SECS = 1.0s`): Ensure detection inference is bypassed during transit and settling phases.
-- [ ] **Frame & Detection Hook (`detect_loop`):**
-  - Call `coordinator.handle_frame(frame, detections, frame_seq)` directly downstream of `detect_frame()`.
-  - Passes raw detections through the 5-gate verifier, persists confirmed tracks to SQLite WAL, enqueues snapshots, and edge-triggers actuators (buzzer & SMS).
-- [ ] **Actuator Loop Cleanup:**
-  - Replace legacy level-triggered buzzer polling loop in `apply_severity_actions()` with the edge-triggered `BuzzerScheduler`.
+- [x] **65 Python tests passed**, including existing pump/detection/repair/fungus regressions and new timing, attribution, verifier, persistence, snapshots, buzzer, SMS, and API tests.
+- [x] All 13 frozen inference functions retain their baseline source hashes.
+- [x] **24 Flutter tests passed**; Flutter analysis reports **no issues**.
+- [x] Android debug APK built at build/app/outputs/flutter-apk/app-debug.apk.
+- [x] Android release APK built at build/app/outputs/flutter-apk/app-release.apk (51.5 MB; versionCode 2).
+- [x] Flutter web build and headless Edge interaction/viewport checks completed.
+- [x] Canonical ESP32 firmware compiled with ESP32 core 3.3.11 for esp32:esp32:esp32; no flashing performed.
+- [x] UI inspected at phone and tablet widths, with 1.0/1.5 text scales, disconnected state, empty logs, and a failed SMS command. Evidence is under .verification/ui and .verification/browser-*.png.
+- [x] Pi/ESP32 acceptance procedure prepared in rpi_server/docs/HARDWARE_ACCEPTANCE.md.
 
----
+## Pending connected-device acceptance
 
-## 2. Backend: API Endpoints (`rpi_server/api_extensions.py`)
+- [ ] Run the full physical scan cycle and verify motor/camera alignment.
+- [ ] Verify actual Pi camera/Hailo inference, restart recovery, and persisted detections against representative targets.
+- [ ] Verify pump release, manual priority, heartbeat loss, and relay acknowledgement on the connected rig.
+- [ ] Verify GPIO 26 buzzer output, mute, coalescing, and duty limits.
+- [ ] Verify SIM800L modem submission and actual handset receipt, including network loss/reboot cases.
+- [ ] Install and exercise the debug APK on the intended Android device.
 
-All 10 required endpoints are **fully authored** in `api_extensions.py`:
-
-- [x] `GET /api/scan/state`: Authoritative 7-phase scan cycle state dict.
-- [x] `GET /api/logs`: Paginated track list from `PersistenceDB` with multi-station and FP filters.
-- [x] `POST /api/logs/{track_id}/false-positive`: Marks track as false positive for precision tracking.
-- [x] `GET /api/cooldowns`: Real-time remaining/total seconds for pump and SMS actuators.
-- [x] `GET /api/sms/status`: Returns last SMS dispatch and delivery status from `SmsBroker`.
-- [x] `POST /api/sms/test`: Dispatches a test SMS to `?phone=` or default farmer phone.
-- [x] `POST /api/buzzer/mute`: Mutes/unmutes buzzer scheduler via `{"muted": true|false}`.
-- [x] `GET /api/config`: Exports non-secret configuration constants for Flutter About screen.
-- [x] `GET /api/precision`: Calculates per-class precision metrics: `(total - FP) / total`.
-- [x] `GET /api/snapshots/{filename}`: Safe image streaming from snapshot directories.
-- [ ] **Remaining Action:** Expose live by executing `coordinator.wire(app)` in `main.py`.
-
----
-
-## 3. Frontend: Flutter UI Components & Services (`lib/`)
-
-- [x] **Cooldown Status UI:**
-  - `lib/widgets/cooldown_chip.dart` mounted on `dashboard_screen.dart` (Pump & SMS cooldown badges with real-time countdown).
-  - Cooldown polling loop integrated into `_startPolling()`.
-- [x] **About / System Config Screen:**
-  - `lib/screens/about_screen.dart` implemented with 6 grouped sections (Timing, Thresholds, Verifier Gates, Actuators, Severity, Hardware).
-  - Navigation button with `Icons.info_outline_rounded` added to dashboard top bar.
-- [x] **Buzzer Mute Button:**
-  - Interactive mute/unmute button added to dashboard top bar with amber indicator state and optimistic UI update.
-- [ ] **Missing API Service Methods (`lib/services/api_service.dart`):**
-  - [ ] `Future<Map<String, dynamic>?> fetchConfig()`
-  - [ ] `Future<bool> setBuzzerMute(bool muted)`
-  - [ ] `Future<Map<String, dynamic>?> testSms([String? phone])`
-  - [ ] `Future<Map<String, dynamic>?> fetchPrecision()`
-- [ ] **Clock Drift Compensation (`scan_state_model.dart`):**
-  - Implement clock-offset EWMA model to keep client-side remaining second timers accurately synced with server monotonic time.
-
----
-
-## 4. Brand Assets: Logos & Icons (Component H)
-
-The repository currently only has `assets/icon/farmcam_logo.png`. The following assets are still needed:
-
-- [ ] `assets/logo.svg` (Leaf + scan frame design with dark/light mode `currentColor`)
-- [ ] `assets/logo_wordmark.svg` (Horizontal branding logo)
-- [ ] `assets/favicon.svg` (Simplified icon for web/browser tabs)
-- [ ] Scaled PNG icons:
-  - `assets/logo_32.png`
-  - `assets/logo_180.png`
-  - `assets/logo_192.png`
-  - `assets/logo_512.png`
-- [ ] Add asset directory declarations to `pubspec.yaml`.
-
----
-
-## 5. Documentation: Technical Architecture Specification
-
-- [x] `rpi_server/docs/AUDIT.md`: Pre-implementation codebase analysis and frozen path identification.
-- [ ] `rpi_server/docs/SYSTEM_OVERVIEW.md`:
-  - Complete architecture diagram (Mermaid flow).
-  - 7-phase scan cycle timing formulas ($T_{\text{cycle}} = 325\text{ s}$).
-  - 5-gate detection verifier mathematical criteria & formulas (skin rejection, green-ring context, temporal centroid drift).
-  - Multi-station SQLite WAL schema & IoU rescan track merge logic.
-  - ESP32 SIM800L hardware troubleshooting & UART2 wiring guide.
-
----
-
-## 6. Test Suite: Automated Verification (`rpi_server/tests/`)
-
-`rpi_server/tests/` directory is created but awaiting test files:
-
-- [ ] `tests/test_scan_state.py`: 7-phase transition validation, simulated clock ticks, queue clearing, settle window suppression.
-- [ ] `tests/test_verifier.py`: Synthetic test cases for confidence gate, aspect ratio, skin HSV detection, green ratio context, and centroid drift.
-- [ ] `tests/test_persistence.py`: SQLite WAL operations, multi-station isolation (Station 2 scan does not purge Station 1), track updates, and FP toggles.
-- [ ] `tests/test_cooldowns.py`: Actuator cooldown persistence across restarts.
-- [ ] `tests/test_buzzer.py`: Edge-triggering, coalescing, and duty cycle limits.
-- [ ] `tests/test_sms_protocol.py`: JSON ACK parsing, timeout retry backoff.
-
----
-
-## Prioritized Implementation Roadmap
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ COMPLETED                                                              │
-│  ✔ Submodules (scan_state, verifier, persistence, buzzer, sms, snaps)   │
-│  ✔ Integration glue: rpi_server/coordinator.py authored                 │
-│  ✔ API extensions: rpi_server/api_extensions.py (all 10 endpoints)      │
-│  ✔ Frontend widgets: CooldownChip row, Buzzer Mute, AboutScreen        │
-└────────────────────────────────────┬───────────────────────────────────┘
-                                     │
-                                     ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ STEP 1: Flutter ApiService Methods (Quick Fix)                         │
-│  Add fetchConfig, setBuzzerMute, testSms, fetchPrecision to             │
-│  lib/services/api_service.dart                                         │
-└────────────────────────────────────┬───────────────────────────────────┘
-                                     │
-                                     ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ STEP 2: Main.py Coordinator Wireup (Critical Backend Integration)      │
-│  Connect coordinator.wire(app), coordinator.tick(), and                │
-│  coordinator.handle_frame() in rpi_server/main.py                      │
-│  (Strictly keeping inference pipeline functions frozen)               │
-└────────────────────────────────────┬───────────────────────────────────┘
-                                     │
-                                     ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ STEP 3: Brand Assets & pubspec.yaml (Component H)                      │
-│  Generate SVGs (logo, wordmark, favicon) and scaled PNGs               │
-└────────────────────────────────────┬───────────────────────────────────┘
-                                     │
-                                     ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ STEP 4: Technical Documentation                                        │
-│  Author rpi_server/docs/SYSTEM_OVERVIEW.md with Mermaid diagrams       │
-└────────────────────────────────────┬───────────────────────────────────┘
-                                     │
-                                     ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ STEP 5: Pytest Test Suite                                              │
-│  Implement unit & integration tests under rpi_server/tests/            │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-> [!IMPORTANT]
-> **Frozen Path Reminder:** When completing `main.py` wiring in Step 2, do NOT alter or reformat:
-> `postprocess_yolov8`, `_decode_hailo_nms`, `_decode_nms_tensor`, `_dfl_decode`, `nms`, `_valid_box`, `_as_hwc`, `_maybe_sigmoid`, `_sigmoid`, `_softmax`, `run_inference_on_network`, `detect_frame`, or `_mask_to_polygon_and_area`.
+The iOS project and icons are present, but iOS compilation/signing requires macOS/Xcode and was not tested here. The local Android toolchain emits future-support deprecation warnings; its current debug build succeeds. Runtime logs and build evidence are in .verification (local, ignored). Hardware checks must remain pending until performed and recorded.

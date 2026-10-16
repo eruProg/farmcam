@@ -205,10 +205,12 @@ class DetectionTests(unittest.TestCase):
         cam.capture_array.side_effect = capture
         self.ns.update(camera=cam, HAS_CAMERA=True, stop_event=event,
                        frame_lock=threading.Lock(), frame_sequence=0,
+                       coordinator=types.SimpleNamespace(capture_meta=Mock(return_value='stamp')),
                        time=types.SimpleNamespace(monotonic=lambda: 100.0))
         self.ns["capture_frames"]()
         np.testing.assert_array_equal(self.ns["current_frame"], frame)
         self.assertEqual(self.ns["frame_sequence"], 1)
+        self.assertEqual(self.ns['current_frame_meta'], 'stamp')
 
 
 if __name__ == "__main__":

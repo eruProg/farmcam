@@ -2,18 +2,18 @@ import 'package:flutter/material.dart';
 import '../data/app_state.dart';
 
 // ─── Design Tokens ──────────────────────────────────────────────
-const _card    = Color(0xFFFFFFFF);
-const _border  = Color(0xFFE4E4E7);
-const _fg      = Color(0xFF18181B);
-const _muted   = Color(0xFF71717A);
-const _green   = Color(0xFF16A34A);
+const _card = Color(0xFFFFFFFF);
+const _border = Color(0xFFE4E4E7);
+const _fg = Color(0xFF18181B);
+const _muted = Color(0xFF71717A);
+const _green = Color(0xFF16A34A);
 const _greenBg = Color(0xFFDCFCE7);
-const _amber   = Color(0xFFD97706);
+const _amber = Color(0xFFD97706);
 const _amberBg = Color(0xFFFEF3C7);
-const _red     = Color(0xFFDC2626);
-const _redBg   = Color(0xFFFEE2E2);
-const _blue    = Color(0xFF2563EB);
-const _blueBg  = Color(0xFFEFF6FF);
+const _red = Color(0xFFDC2626);
+const _redBg = Color(0xFFFEE2E2);
+const _blue = Color(0xFF2563EB);
+const _blueBg = Color(0xFFEFF6FF);
 // ────────────────────────────────────────────────────────────────
 
 class LettuceCard extends StatelessWidget {
@@ -67,7 +67,9 @@ class LettuceCard extends StatelessWidget {
 
     // Confidence display
     final confPct = (s.confidence * 100).toStringAsFixed(0);
-    final hasConf = s.confidence > 0 && s.status != LettuceStatus.clear && s.status != LettuceStatus.unknown;
+    final hasConf = s.confidence > 0 &&
+        s.status != LettuceStatus.clear &&
+        s.status != LettuceStatus.unknown;
 
     return GestureDetector(
       onTap: onTap,
@@ -79,11 +81,16 @@ class LettuceCard extends StatelessWidget {
           color: _card,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: isActive ? accent.withOpacity(0.5) : _border,
+            color: isActive ? accent.withValues(alpha: 0.5) : _border,
             width: isActive ? 1.5 : 1,
           ),
           boxShadow: isActive
-              ? [BoxShadow(color: accent.withOpacity(0.08), blurRadius: 12, spreadRadius: 1)]
+              ? [
+                  BoxShadow(
+                      color: accent.withValues(alpha: 0.08),
+                      blurRadius: 12,
+                      spreadRadius: 1)
+                ]
               : null,
         ),
         child: Column(
@@ -93,7 +100,8 @@ class LettuceCard extends StatelessWidget {
             Row(
               children: [
                 Container(
-                  width: 32, height: 32,
+                  width: 32,
+                  height: 32,
                   decoration: BoxDecoration(
                     color: accentBg,
                     borderRadius: BorderRadius.circular(8),
@@ -106,20 +114,30 @@ class LettuceCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(s.name,
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: _fg),
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: _fg),
                           overflow: TextOverflow.ellipsis),
                       Text(statusText,
-                          style: TextStyle(fontSize: 11, color: accent, fontWeight: FontWeight.w500)),
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: accent,
+                              fontWeight: FontWeight.w500)),
                     ],
                   ),
                 ),
                 if (isActive)
                   Container(
-                    width: 8, height: 8,
+                    width: 8,
+                    height: 8,
                     decoration: BoxDecoration(
                       color: _green,
                       shape: BoxShape.circle,
-                      boxShadow: [BoxShadow(color: _green.withOpacity(0.4), blurRadius: 4)],
+                      boxShadow: [
+                        BoxShadow(
+                            color: _green.withValues(alpha: 0.4), blurRadius: 4)
+                      ],
                     ),
                   ),
               ],
@@ -144,7 +162,8 @@ class LettuceCard extends StatelessWidget {
                       color: _red,
                     ),
 
-                  if (s.status == LettuceStatus.fungus || s.fungusCoveragePct > 0) ...[
+                  if (s.status == LettuceStatus.fungus ||
+                      s.fungusCoveragePct > 0) ...[
                     _MiniStat(
                       icon: Icons.coronavirus_outlined,
                       label: 'Coverage',
@@ -171,16 +190,21 @@ class LettuceCard extends StatelessWidget {
                   if (s.pestCount > 0 && s.pestSeverityLevel != 'none')
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4),
-                      child: _SeverityBadge(label: 'PEST', level: s.pestSeverityLevel),
+                      child: _SeverityBadge(
+                          label: 'PEST', level: s.pestSeverityLevel),
                     ),
-                  if (s.fungusCoveragePct > 0 && s.fungusSeverityLevel != 'none')
+                  if (s.fungusCoveragePct > 0 &&
+                      s.fungusSeverityLevel != 'none')
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4),
-                      child: _SeverityBadge(label: 'FUNGUS', level: s.fungusSeverityLevel),
+                      child: _SeverityBadge(
+                          label: 'FUNGUS', level: s.fungusSeverityLevel),
                     ),
 
                   // Healthy placeholder
-                  if (s.status == LettuceStatus.clear && s.pestCount == 0 && s.fungusCoveragePct == 0)
+                  if (s.status == LettuceStatus.clear &&
+                      s.pestCount == 0 &&
+                      s.fungusCoveragePct == 0)
                     const Text('No threats detected',
                         style: TextStyle(fontSize: 11, color: _muted)),
                 ],
@@ -194,20 +218,33 @@ class LettuceCard extends StatelessWidget {
 }
 
 class _SeverityBadge extends StatelessWidget {
-  final String label;  // 'PEST' or 'FUNGUS'
-  final String level;  // 'low' | 'medium' | 'high'
+  final String label; // 'PEST' or 'FUNGUS'
+  final String level; // 'low' | 'medium' | 'high'
   const _SeverityBadge({required this.label, required this.level});
 
   @override
   Widget build(BuildContext context) {
-    final color = level == 'high' ? _red : level == 'medium' ? _amber : _green;
-    final bg = level == 'high' ? _redBg : level == 'medium' ? _amberBg : _greenBg;
+    final color = level == 'high'
+        ? _red
+        : level == 'medium'
+            ? _amber
+            : _green;
+    final bg = level == 'high'
+        ? _redBg
+        : level == 'medium'
+            ? _amberBg
+            : _greenBg;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(4)),
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(4)),
       child: Text(
         '$label: ${level.toUpperCase()}',
-        style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: color),
+        style: TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.5,
+            color: color),
       ),
     );
   }
@@ -218,7 +255,11 @@ class _MiniStat extends StatelessWidget {
   final String label;
   final String value;
   final Color color;
-  const _MiniStat({required this.icon, required this.label, required this.value, required this.color});
+  const _MiniStat(
+      {required this.icon,
+      required this.label,
+      required this.value,
+      required this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -230,7 +271,9 @@ class _MiniStat extends StatelessWidget {
           const SizedBox(width: 4),
           Text(label, style: const TextStyle(fontSize: 10, color: _muted)),
           const Spacer(),
-          Text(value, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color)),
+          Text(value,
+              style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w700, color: color)),
         ],
       ),
     );

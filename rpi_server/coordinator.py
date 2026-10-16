@@ -1,344 +1,230 @@
-"""
-coordinator.py — Integration glue for the FarmCam overhaul
-===========================================================
-This module wires every new subsystem (scan state machine, verifier,
-persistence, buzzer, SMS broker, snapshot writer) into main.py WITHOUT
-touching any frozen function.
-
-main.py adds exactly two calls:
-  1. At startup (after init_db):          coordinator.wire(app)
-  2. In detect_loop, once per iteration:  coordinator.tick()
-  3. In detect_loop, after detect_frame:  coordinator.handle_frame(frame, dets, seq)
-
-The coordinator reads & writes the main.py globals it needs through the
-``_main`` module reference (imported lazily so there are no circular deps
-at module load time).  It NEVER alters any frozen function.
-
-Frozen functions (NEVER imported, called, or patched here):
-  postprocess_yolov8, _decode_hailo_nms, _decode_nms_tensor, _dfl_decode,
-  nms, _valid_box, _as_hwc, _maybe_sigmoid, _sigmoid, _softmax,
-  run_inference_on_network, detect_frame, _mask_to_polygon_and_area
-"""
-
-from __future__ import annotations
-
+"""Runtime integration; frozen inference functions remain owned by main.py."""
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
-
 import config
+from scan_state import ScanStateMachine, ScanPhase
+from persistence import PersistenceDB, CooldownManager, _iou
 
-log = logging.getLogger("farmcam.coordinator")
-
-# ── Subsystem singletons (populated by wire()) ───────────────────────────────
-
-_scan_sm:      Optional[Any] = None   # ScanStateMachine
-_verifier:     Optional[Any] = None   # DetectionVerifier
-_db:           Optional[Any] = None   # PersistenceDB
-_cooldown_mgr: Optional[Any] = None   # CooldownManager
-_buzzer:       Optional[Any] = None   # BuzzerScheduler
-_sms_broker:   Optional[Any] = None   # SmsBroker
-_snap_writer:  Optional[Any] = None   # SnapshotWriter
-
-# Current open scan IDs — one per (station, position) while in progress
-_open_scans: Dict[Tuple[int, str], str] = {}
-_open_lock = threading.Lock()
-
-# Track IDs confirmed this scan window (station -> set) so we don't double-fire actuators
-_confirmed_new: Dict[int, set] = {}
-
+log = logging.getLogger(__name__)
+_lock = threading.RLock()
+_runtime = None
+_scan_sm = _verifier = _db = _cooldown_mgr = None
+_buzzer = _sms_broker = _snap_writer = None
+_window = None
 _wired = False
+_fault = None
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def wire(app=None) -> None:
-    """Initialise all subsystems and register API extensions.
-    Call once from startup() after init_db()."""
-    global _scan_sm, _verifier, _db, _cooldown_mgr, _buzzer, _sms_broker, _snap_writer, _wired
-
+def wire(runtime):
+    global _runtime, _scan_sm, _verifier, _db, _cooldown_mgr
+    global _buzzer, _sms_broker, _snap_writer, _wired, _fault
     if _wired:
         return
-    _wired = True
-
-    log.info("coordinator.wire(): initialising subsystems")
-
-    # ── Persistence ──────────────────────────────────────────────────────
-    try:
-        from persistence import PersistenceDB, CooldownManager
-        _db           = PersistenceDB(config.DB_PATH)
-        _cooldown_mgr = CooldownManager(_db)
-        log.info("  PersistenceDB ready: %s", config.DB_PATH)
-    except Exception as exc:
-        log.error("  PersistenceDB FAILED: %s", exc)
-
-    # ── Snapshot writer ──────────────────────────────────────────────────
-    try:
-        from snapshot_writer import SnapshotWriter
-        _snap_writer = SnapshotWriter(db=_db)
-        _snap_writer.start()
-        log.info("  SnapshotWriter started")
-    except Exception as exc:
-        log.error("  SnapshotWriter FAILED: %s", exc)
-
-    # ── SMS broker ───────────────────────────────────────────────────────
-    try:
-        from sms_broker import SmsBroker
-        _sms_broker = SmsBroker(
-            esp32_ip   = config.ESP32_IP,
-            esp32_port = config.ESP32_PORT,
-        )
-        _sms_broker.start()
-        log.info("  SmsBroker started -> ESP32 at %s:%s", config.ESP32_IP, config.ESP32_PORT)
-    except Exception as exc:
-        log.error("  SmsBroker FAILED: %s", exc)
-
-    # ── Buzzer scheduler ─────────────────────────────────────────────────
-    try:
-        from buzzer import BuzzerScheduler
-        _buzzer = BuzzerScheduler()
-        _buzzer.start()
-        log.info("  BuzzerScheduler started (pin %d)", config.BUZZER_PIN)
-    except Exception as exc:
-        log.error("  BuzzerScheduler FAILED: %s", exc)
-
-    # ── Detection verifier (lazy import — needs OpenCV) ───────────────────
+    _runtime = runtime
     try:
         from verifier import DetectionVerifier
+        from snapshot_writer import SnapshotWriter
+        from sms_broker import SmsBroker
+        from buzzer import BuzzerScheduler
+        _db = PersistenceDB(config.DB_PATH)
+        _db.abort_incomplete_scans()
+        _cooldown_mgr = CooldownManager(_db)
         _verifier = DetectionVerifier()
-        log.info("  DetectionVerifier ready (5 gates)")
-    except Exception as exc:
-        log.error("  DetectionVerifier FAILED (will pass all detections): %s", exc)
-
-    # ── Scan state machine ────────────────────────────────────────────────
-    try:
-        from scan_state import ScanStateMachine, ScanPhase
-        _scan_sm = ScanStateMachine(stations=config.LETTUCE_SEQUENCE)
+        _snap_writer = SnapshotWriter(db=_db)
+        _sms_broker = SmsBroker()
+        _buzzer = BuzzerScheduler(command=runtime.esp32_cmd)
+        for service in (_snap_writer, _sms_broker, _buzzer):
+            service.start()
+        _scan_sm = ScanStateMachine()
         _scan_sm.on_phase_change(_on_phase_change)
+        _fault = None
+        _wired = True
+        _restore_stations()
         _scan_sm.start()
-        log.info("  ScanStateMachine started at station %d", _scan_sm.station)
-    except Exception as exc:
-        log.error("  ScanStateMachine FAILED: %s", exc)
-
-    # ── API extension routes ──────────────────────────────────────────────
-    if app is not None:
-        try:
-            from api_extensions import register_extensions
-            register_extensions(app, get_shared_state)
-            log.info("  API extensions registered")
-        except Exception as exc:
-            log.error("  API extensions FAILED: %s", exc)
-
-    log.info("coordinator.wire(): done")
+        _sync()
+    except Exception:
+        shutdown()
+        raise
 
 
-def get_shared_state() -> Dict[str, Any]:
-    """Returns a snapshot dict for api_extensions and the Flutter UI."""
-    import main as _main
-    return {
-        "scan_sm":          _scan_sm,
-        "db":               _db,
-        "cooldown_mgr":     _cooldown_mgr,
-        "sms_broker":       _sms_broker,
-        "buzzer_scheduler": _buzzer,
-        # Legacy fallbacks (read-only)
-        "active_station_id": _main.active_station_id,
-        "current_state":     _main.current_state,
-        "pump_active":       _main.pump_active,
-        "pump_last_spray_time": _last_spray_time(),
-    }
+def get_shared_state():
+    with _lock:
+        return dict(scan_sm=_scan_sm, db=_db, cooldown_mgr=_cooldown_mgr,
+                    sms_broker=_sms_broker, buzzer_scheduler=_buzzer,
+                    fault=_fault, pump_active=bool(_runtime and _runtime.pump_active))
 
 
-def tick() -> None:
-    """Drive the ScanStateMachine.  Call once per detect_loop iteration BEFORE
-    the frame-grab.  Syncs active_station_id / current_state back to main.py
-    globals so legacy code continues to work."""
-    if _scan_sm is None:
-        return
-    _scan_sm.tick()
-    _sync_to_main()
+def scan_state():
+    with _lock:
+        return _scan_sm.state_dict() if _scan_sm else None
 
 
-def handle_frame(
-    frame,
-    raw_dets: List,
-    seq: int,
-) -> List:
-    """
-    Post-frozen-inference pipeline:
-      1. Gate: skip frame if not in a detection phase (safety net).
-      2. Build FrameMeta from the current scan state.
-      3. Run DetectionVerifier on each candidate.
-      4. Upsert verified tracks into PersistenceDB.
-      5. Feed new tracks to BuzzerScheduler (edge-triggered).
-      6. Submit frame to SnapshotWriter for thumbnails.
+def tick():
+    with _lock:
+        if _scan_sm:
+            if _window and time.monotonic() - _window['last_frame'] > 2.0:
+                _window['valid'] = False
+            _scan_sm.tick()
+            _sync()
 
-    Returns the list of VERIFIED detections (same format as raw_dets).
-    This list is what main.py uses for dashboard publishing and live alerts.
-    """
-    if _scan_sm is None:
-        # Subsystems not wired — return raw detections unchanged
-        return raw_dets
 
-    if not _scan_sm.is_detecting:
-        return []
+def capture_meta(seq, captured_at=None):
+    with _lock:
+        return _scan_sm.make_frame_meta(seq, captured_at) if _scan_sm else None
 
-    meta = _scan_sm.make_frame_meta(seq)
 
-    # ── Verifier ─────────────────────────────────────────────────────────
-    if _verifier is not None:
+def accepts(meta):
+    with _lock:
+        return bool(_wired and meta and _scan_sm.is_detecting
+                    and meta.scan_id == _scan_sm.scan_id
+                    and meta.phase == _scan_sm.phase
+                    and meta.station == _scan_sm.station
+                    and meta.captured_at >= _scan_sm.phase_started_at
+                    and meta.captured_at < _scan_sm.phase_started_at + _scan_sm.phase_duration
+                    and time.monotonic() - meta.captured_at <= 2.0)
+
+
+def handle_frame(frame, raw_dets, meta):
+    global _fault
+    with _lock:
+        # Inference may have crossed the end of the window.
+        tick()
+        if not accepts(meta) or not _window:
+            return None
         try:
             verified = _verifier.verify(raw_dets, frame, meta)
         except Exception as exc:
-            log.error("verifier.verify raised: %s", exc)
-            verified = raw_dets  # fail-open: don't block dashboard
-    else:
-        verified = raw_dets
-
-    # ── Persistence ───────────────────────────────────────────────────────
-    if _db is not None and verified:
-        _persist_tracks(meta, verified, frame)
-
-    # ── Snapshot (async, non-blocking) ────────────────────────────────────
-    if _snap_writer is not None and verified:
-        try:
-            _snap_writer.submit(frame, verified, meta=meta)
-        except Exception as exc:
-            log.debug("snapshot submit: %s", exc)
-
-    return verified
-
-
-def shutdown() -> None:
-    """Graceful teardown — call from cleanup()."""
-    if _scan_sm is not None:
-        try:
-            _scan_sm.stop()
-        except Exception:
-            pass
-    if _snap_writer is not None:
-        try:
-            _snap_writer.stop()
-        except Exception:
-            pass
-    if _sms_broker is not None:
-        try:
-            _sms_broker.stop()
-        except Exception:
-            pass
-    if _buzzer is not None:
-        try:
-            _buzzer.fail_safe_off()
-            _buzzer.stop()
-        except Exception:
-            pass
-    log.info("coordinator shutdown complete")
-
-
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
-def _on_phase_change(new_phase, station: int) -> None:
-    """Callback fired synchronously by ScanStateMachine on every transition."""
-    import main as _main
-    from scan_state import ScanPhase
-
-    # Flush queued frames — prevent stale frames from a previous phase being
-    # processed in the new one.  main.py's detect_loop reads frame_sequence;
-    # advancing it forces a re-grab.
-    _main.frame_sequence += 1
-
-    if new_phase in (ScanPhase.DETECT_UPPER, ScanPhase.DETECT_LOWER):
-        # Start a new scan window in the DB
-        pos = new_phase.position()
-        if _db is not None:
-            with _open_lock:
-                scan_id = _db.begin_scan(station, pos)
-                _open_scans[(station, pos)] = scan_id
-        _confirmed_new[station] = set()
-        log.info("Phase -> %s  station=%d  pos=%s", new_phase.name, station, pos)
-
-    elif new_phase in (ScanPhase.TRANSIT_TO_LOWER, ScanPhase.TRANSIT_TO_UPPER,
-                       ScanPhase.MOVING_TO_STATION, ScanPhase.SETTLING):
-        log.info("Phase -> %s  station=%d", new_phase.name, station)
-
-
-def _sync_to_main() -> None:
-    """Mirror scan machine state back into main.py globals so legacy
-    dashboard / MJPEG HUD code continues to work unchanged."""
-    if _scan_sm is None:
-        return
-    try:
-        import main as _main
-        from scan_state import ScanPhase
-        _main.active_station_id = _scan_sm.station
-        # Map 7-phase enum -> 4-state legacy string for HUD
-        _LEGACY_MAP = {
-            ScanPhase.DETECT_UPPER:      "DETECT_A",
-            ScanPhase.TRANSIT_TO_LOWER:  "PAUSE_5",
-            ScanPhase.SETTLING:          "PAUSE_5",
-            ScanPhase.DETECT_LOWER:      "DETECT_B",
-            ScanPhase.TRANSIT_TO_UPPER:  "MOVING",
-            ScanPhase.MOVING_TO_STATION: "MOVING",
-            ScanPhase.IDLE:              "IDLE",
-        }
-        _main.current_state = _LEGACY_MAP.get(_scan_sm.phase, "IDLE")
-    except Exception as exc:
-        log.debug("_sync_to_main: %s", exc)
-
-
-def _persist_tracks(meta, verified: List, frame) -> None:
-    """Upsert confirmed detections into the DB and fire edge-triggered actuators."""
-    try:
-        from scan_state import ScanPhase
-        # Only commit during actual detection phases
-        if meta.phase not in (ScanPhase.DETECT_UPPER, ScanPhase.DETECT_LOWER):
-            return
-
-        with _open_lock:
-            scan_id = _open_scans.get((meta.station, meta.position))
-        if scan_id is None:
-            return
-
-        new_ids: List[str] = []
+            _fault = 'Verification unavailable'
+            _window['valid'] = False
+            log.exception('Verification failed; automatic actuation disabled')
+            return None
+        _fault = None
+        _window['frames'] += 1
+        _window['last_frame'] = time.monotonic()
+        # Keep at most eight full-resolution frames per window, shared between
+        # detections. Track accumulation must not multiply camera memory by 256.
+        snapshot_frame = None
+        if verified and _window['snapshot_count'] < 8:
+            snapshot_frame = frame.copy()
+            _window['snapshot_count'] += 1
         for det in verified:
-            try:
-                x1, y1, x2, y2, name, conf = det[:6]
-                result = _db.commit_scan(
-                    scan_id, meta.station, meta.position,
-                    [{
-                        "class":      name,
-                        "confidence": float(conf),
-                        "bbox":       [int(x1), int(y1), int(x2), int(y2)],
-                    }]
-                )
-                # commit_scan returns track_id string for new/updated tracks
-                if isinstance(result, str):
-                    confirmed_set = _confirmed_new.setdefault(meta.station, set())
-                    if result not in confirmed_set:
-                        confirmed_set.add(result)
-                        new_ids.append((name, result))
-            except Exception as exc:
-                log.debug("_persist_tracks inner: %s", exc)
-
-        # Edge-triggered actuators — fire ONLY for brand-new tracks
-        for event_class, _ in new_ids:
-            if _buzzer is not None:
-                try:
-                    _buzzer.trigger(event_class)
-                except Exception as exc:
-                    log.debug("buzzer.trigger: %s", exc)
-    except Exception as exc:
-        log.error("_persist_tracks: %s", exc)
+            det = list(det)
+            while len(det) < 8:
+                det.append(None if len(det) == 6 else 0)
+            area = det[7] or max(0, det[2]-det[0]) * max(0, det[3]-det[1])
+            det = det[:8] + [min(100.0, area * 100.0 / max(1, frame.shape[0]*frame.shape[1])) if det[4] == 'fungus' else 0.0]
+            match = next((entry for entry in _window['detections']
+                          if entry['det'][4] == det[4]
+                          and _iou(entry['det'][:4], det[:4]) >= config.TRACK_IOU_RESCAN), None)
+            if match is None:
+                if len(_window['detections']) >= 256:
+                    _window['valid'] = False
+                    continue
+                _window['detections'].append(dict(det=det, frame=snapshot_frame, meta=meta))
+            elif det[5] > match['det'][5]:
+                # Keep the snapshot and its corresponding geometry together.
+                if snapshot_frame is not None:
+                    match.update(det=det, frame=snapshot_frame, meta=meta)
+                else:
+                    match['det'][5] = det[5]
+        return verified
 
 
-def _last_spray_time() -> float:
-    """Read last spray time from cooldowns table (fallback 0 if not wired)."""
-    if _cooldown_mgr is None:
-        return 0.0
+def automatic_ready(station=None, scan_id=None):
+    with _lock:
+        return bool(_wired and not _fault and _window and _window['valid']
+                    and _scan_sm.is_detecting and _scan_sm.remaining > 0
+                    and (station is None or station == _scan_sm.station)
+                    and (scan_id is None or scan_id == _scan_sm.scan_id))
+
+
+def overlay(detections):
+    """Adapt verified inference rows to the existing MJPEG drawing contract."""
+    colors = {'fungus': (0,165,255), 'whiteflies': (0,255,255),
+              'whitefly': (0,255,255), 'worm': (0,0,255)}
+    return [tuple(det[:4]) + (f'{det[4]} {det[5]:.2f}', colors.get(det[4], (0,255,0)),
+                             det[6] if len(det) > 6 else None) for det in detections]
+
+
+def send_sms(alert_type, station, message):
+    if not _wired or not _sms_broker or not config.FARMER_PHONE:
+        return False
+    if not _cooldown_mgr.claim('sms', config.SMS_COOLDOWN_S):
+        return False
+    return bool(_sms_broker.send(config.FARMER_PHONE,
+                                f'FarmCam L{station} {alert_type}: {message}'[:160]))
+
+
+def _finish_window():
+    global _window
+    window, _window = _window, None
+    if not window:
+        return
+    if not window['valid'] or not window['frames']:
+        _db.abort_scan(window['id'])
+        return
+    entries = window['detections']
+    committed_ids = []
+    new_ids = _db.commit_scan(window['id'], window['station'], window['position'],
+                             [entry['det'] for entry in entries],
+                             committed_track_ids=committed_ids)
+    for entry, track_id in zip(entries, committed_ids):
+        det = entry['det']
+        if entry['frame'] is not None:
+            _snap_writer.submit(entry['frame'], [det], track_id, entry['meta'])
+        if track_id in new_ids:
+            _buzzer.trigger(det[4])
+    _restore_stations()
+
+
+def _on_phase_change(phase, station):
+    global _window, _fault
     try:
-        st = _cooldown_mgr.status("pump", config.PUMP_COOLDOWN_S)
-        last = st.get("last_triggered_at") or 0.0
-        return float(last)
+        _finish_window()
+        _verifier.reset_tracker()
+        if _runtime:
+            _runtime.display_detections = []
+            _runtime.scan_phase_changed(phase, station)
+        if phase in (ScanPhase.DETECT_UPPER, ScanPhase.DETECT_LOWER):
+            scan_id = _db.begin_scan(station, phase.position(), _scan_sm.scan_id)
+            _window = dict(id=scan_id, station=station, position=phase.position(),
+                           frames=0, valid=True, last_frame=time.monotonic(), detections=[], snapshot_count=0)
     except Exception:
-        return 0.0
+        _fault = 'Scan persistence unavailable'
+        if _window:
+            _window['valid'] = False
+        log.exception('Scan transition failed; automatic actuation disabled')
+
+
+def _restore_stations():
+    if _runtime:
+        _runtime.restore_station_summaries(_db.get_station_summary())
+
+
+def _sync():
+    if _runtime and _scan_sm:
+        _runtime.active_station_id = _scan_sm.station
+        _runtime.buzzer_muted = _buzzer.is_muted if _buzzer else True
+        _runtime.current_state = {
+            ScanPhase.DETECT_UPPER: 'DETECT_A', ScanPhase.DETECT_LOWER: 'DETECT_B',
+            ScanPhase.TRANSIT_TO_LOWER: 'PAUSE_5', ScanPhase.SETTLING: 'PAUSE_5',
+            ScanPhase.TRANSIT_TO_UPPER: 'MOVING', ScanPhase.MOVING_TO_STATION: 'MOVING',
+        }.get(_scan_sm.phase, 'IDLE')
+
+
+def shutdown():
+    global _wired, _window, _scan_sm, _db, _verifier, _cooldown_mgr
+    global _sms_broker, _snap_writer, _buzzer, _runtime
+    with _lock:
+        _wired = False
+        if _window and _db:
+            _db.abort_scan(_window['id'])
+        _window = None
+        if _scan_sm:
+            _scan_sm.stop()
+        for service in (_buzzer, _sms_broker, _snap_writer):
+            if service:
+                service.stop()
+        _scan_sm = _db = _verifier = _cooldown_mgr = None
+        _sms_broker = _snap_writer = _buzzer = _runtime = None

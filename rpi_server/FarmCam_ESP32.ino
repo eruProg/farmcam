@@ -78,8 +78,8 @@
 
 // ─── !! SET THESE BEFORE FLASHING !! ─────────────────────────
 // Do not commit with real phone numbers.
-#define FARMER_PHONE    "639916425163"   // farmer handset (no '+')
-#define SIM800L_OWN     "639693141995"   // SIM inside SIM800L
+#define FARMER_PHONE    ""   // farmer handset (no '+')
+#define SIM800L_OWN     ""   // SIM inside SIM800L
 
 // ─── WiFi Credentials ────────────────────────────────────────
 const char* WIFI_SSID = "FarmCam";

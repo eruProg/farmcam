@@ -8,21 +8,23 @@
 library;
 
 import 'dart:math';
+import 'dart:async';
 import 'package:flutter/material.dart';
 
-const _fg     = Color(0xFFFAFAFA);
-const _muted  = Color(0xFF71717A);
-const _green  = Color(0xFF22C55E);
-const _amber  = Color(0xFFF59E0B);
-const _red    = Color(0xFFEF4444);
-const _border = Color(0xFF27272A);
-const _card   = Color(0xFF18181B);
+const _fg = Color(0xFF18181B);
+const _muted = Color(0xFF71717A);
+const _green = Color(0xFF22C55E);
+const _amber = Color(0xFFF59E0B);
+const _red = Color(0xFFEF4444);
+const _border = Color(0xFFE4E4E7);
+const _card = Color(0xFFFFFFFF);
 
 class CooldownChip extends StatefulWidget {
   final String label;
   final double remainingS;
   final double totalS;
-  final bool   compact;
+  final bool compact;
+  final bool available;
 
   const CooldownChip({
     super.key,
@@ -30,6 +32,7 @@ class CooldownChip extends StatefulWidget {
     required this.remainingS,
     required this.totalS,
     this.compact = false,
+    this.available = true,
   });
 
   @override
@@ -38,15 +41,20 @@ class CooldownChip extends StatefulWidget {
 
 class _CooldownChipState extends State<CooldownChip>
     with SingleTickerProviderStateMixin {
-
   late AnimationController _arcCtrl;
   late Animation<double> _arcAnim;
-  double _displayRemaining = 0.0;
+  final _elapsed = Stopwatch()..start();
+  Timer? _timer;
+  double get _remaining =>
+      max(0, widget.remainingS - _elapsed.elapsedMilliseconds / 1000);
 
   @override
   void initState() {
     super.initState();
-    _displayRemaining = widget.remainingS;
+    _elapsed.reset();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
     _arcCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
@@ -60,34 +68,43 @@ class _CooldownChipState extends State<CooldownChip>
   @override
   void didUpdateWidget(CooldownChip old) {
     super.didUpdateWidget(old);
+    _elapsed.reset();
     if (old.remainingS != widget.remainingS) {
       _arcAnim = Tween<double>(
         begin: _arcAnim.value,
         end: _fraction(),
       ).animate(CurvedAnimation(parent: _arcCtrl, curve: Curves.easeOut));
-      _displayRemaining = widget.remainingS;
+      _elapsed.reset();
       _arcCtrl.forward(from: 0);
     }
   }
 
   double _fraction() =>
-      widget.totalS <= 0 ? 0 : (1 - widget.remainingS / widget.totalS).clamp(0.0, 1.0);
+      widget.totalS <= 0 ? 0 : (1 - _remaining / widget.totalS).clamp(0.0, 1.0);
 
   Color get _arcColor {
-    if (widget.remainingS <= 0) return _green;
-    final ratio = widget.remainingS / max(widget.totalS, 1);
+    if (_remaining <= 0) return _green;
+    final ratio = _remaining / max(widget.totalS, 1);
     if (ratio > 0.5) return _amber;
     return _red;
   }
 
-  bool get _ready => widget.remainingS <= 0;
+  bool get _ready => widget.available && _remaining <= 0;
 
   @override
-  void dispose() { _arcCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    _timer?.cancel();
+    _arcCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final String timeStr = _ready ? 'Ready' : _formatS(widget.remainingS);
+    final String timeStr = !widget.available
+        ? 'Unavailable'
+        : _ready
+            ? 'Ready'
+            : _formatS(_remaining);
 
     return AnimatedBuilder(
       animation: _arcAnim,
@@ -96,10 +113,10 @@ class _CooldownChipState extends State<CooldownChip>
             ? const EdgeInsets.symmetric(horizontal: 8, vertical: 4)
             : const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          color: _ready ? _green.withOpacity(0.10) : _card,
+          color: _ready ? _green.withValues(alpha: 0.10) : _card,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: _ready ? _green.withOpacity(0.3) : _border,
+            color: _ready ? _green.withValues(alpha: 0.3) : _border,
           ),
         ),
         child: Row(
@@ -107,7 +124,8 @@ class _CooldownChipState extends State<CooldownChip>
           children: [
             // Arc clock
             SizedBox(
-              width: 14, height: 14,
+              width: 14,
+              height: 14,
               child: CustomPaint(
                 painter: _ArcPainter(
                   fraction: _arcAnim.value,
@@ -123,8 +141,11 @@ class _CooldownChipState extends State<CooldownChip>
               children: [
                 Text(
                   widget.label,
-                  style: const TextStyle(fontSize: 9, color: _muted,
-                      fontWeight: FontWeight.w600, letterSpacing: 0.5),
+                  style: const TextStyle(
+                      fontSize: 9,
+                      color: _muted,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.5),
                 ),
                 Text(
                   timeStr,
@@ -152,20 +173,21 @@ class _CooldownChipState extends State<CooldownChip>
 
 class _ArcPainter extends CustomPainter {
   final double fraction;
-  final Color  color;
-  final bool   ready;
+  final Color color;
+  final bool ready;
 
-  const _ArcPainter({required this.fraction, required this.color, required this.ready});
+  const _ArcPainter(
+      {required this.fraction, required this.color, required this.ready});
 
   @override
   void paint(Canvas canvas, Size size) {
     final cx = size.width / 2;
     final cy = size.height / 2;
-    final r  = min(cx, cy) - 1;
+    final r = min(cx, cy) - 1;
 
     // Track
     final trackPaint = Paint()
-      ..color = color.withOpacity(0.15)
+      ..color = color.withValues(alpha: 0.15)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.8
       ..strokeCap = StrokeCap.round;

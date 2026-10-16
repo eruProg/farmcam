@@ -274,7 +274,7 @@ class _CentroidTracker:
             best_tid   = None
             best_score = 0.0
             for tid, tr in self._tracks.items():
-                if tr.name != name:
+                if tr.name != name or tid in matched or tr.scan_id != frame_meta.scan_id:
                     continue
                 iou = _iou(bbox, tr.bbox)
                 if iou < 0.05:
@@ -327,6 +327,8 @@ class _CentroidTracker:
         # Confirm tracks that pass temporal criterion
         confirmed: List = []
         for tid, tr in self._tracks.items():
+            if tid not in matched:
+                continue
             duration = tr.last_seen - tr.first_seen
             recent   = [t for t in tr.times if now - t < config.TRACK_N * 0.15]
             if duration >= config.T_MIN_SECS or len(recent) >= config.TRACK_K:

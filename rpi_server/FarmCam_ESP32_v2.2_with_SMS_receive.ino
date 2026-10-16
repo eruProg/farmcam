@@ -61,7 +61,7 @@
  *
  *  RESPONSE:  "OK" on success, "ERR:<msg>" on failure
  * ============================================================
- *  Farmer receives SMS at +639916425163. SIM800L SIM is +639693141995.
+ *  Farmer receives SMS at +. SIM800L SIM is +.
  * ============================================================
  */
 
@@ -74,8 +74,8 @@ const char* WIFI_SSID = "FarmCam";
 const char* WIFI_PASS = "farmcam1";
 
 // ─── Farmer SMS Number ────────────────────────────────────────
-const char* FARMER_PHONE = "639916425163";   // farmer handset, no '+' (SIM800L)flj
-const char* SIM800L_OWN  = "639693141995";   // SIM inside SIM800L (sender)
+const char* FARMER_PHONE = "";   // farmer handset, no '+' (SIM800L)flj
+const char* SIM800L_OWN  = "";   // SIM inside SIM800L (sender)
 
 // ─── Network ─────────────────────────────────────────────────
 #define ESP32_HTTP_PORT   80      // HTTP server port (RPi5 posts here)

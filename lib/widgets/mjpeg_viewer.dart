@@ -16,9 +16,9 @@ class MjpegViewer extends StatefulWidget {
 
 class _MjpegViewerState extends State<MjpegViewer> {
   Uint8List? _currentFrame;
-  bool _isConnected = false;
   bool _hasError = false;
   StreamSubscription? _subscription;
+  http.Client? _client;
 
   @override
   void initState() {
@@ -29,6 +29,7 @@ class _MjpegViewerState extends State<MjpegViewer> {
   @override
   void dispose() {
     _subscription?.cancel();
+    _client?.close();
     super.dispose();
   }
 
@@ -36,22 +37,25 @@ class _MjpegViewerState extends State<MjpegViewer> {
     _subscription?.cancel();
     setState(() {
       _hasError = false;
-      _isConnected = false;
     });
 
     try {
       final request = http.Request('GET', Uri.parse(widget.streamUrl));
       final client = http.Client();
+      _client = client;
       final response = await client.send(request).timeout(
-        const Duration(seconds: 8),
-      );
+            const Duration(seconds: 8),
+          );
 
+      if (!mounted || _client != client) {
+        client.close();
+        return;
+      }
       if (response.statusCode != 200) {
+        client.close();
         if (mounted) setState(() => _hasError = true);
         return;
       }
-
-      if (mounted) setState(() => _isConnected = true);
 
       // Parse multipart MJPEG stream
       final buffer = BytesBuilder();
@@ -103,7 +107,7 @@ class _MjpegViewerState extends State<MjpegViewer> {
         },
         onDone: () {
           if (mounted) {
-            setState(() => _isConnected = false);
+            setState(() => _hasError = true);
             Future.delayed(const Duration(seconds: 3), () {
               if (mounted) _connect();
             });

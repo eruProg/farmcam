@@ -104,6 +104,7 @@ class ScanStateMachine:
         self._phase_started:  float  = 0.0
         self._phase_duration: float  = 0.0
         self._scan_id:        str    = ""
+        self._move_seconds = config.MOVE_SECS
         # The next phase to enter after a SETTLING period
         self._next_after_settle: ScanPhase = ScanPhase.DETECT_UPPER
 
@@ -153,6 +154,8 @@ class ScanStateMachine:
 
         if p is ScanPhase.TRANSIT_TO_UPPER:
             if elapsed >= config.TRANSIT_UP_SECS:
+                self._move_seconds = (config.LOOP_AFTER_4_SECS if self.station == 4
+                                      else config.MOVE_SECS)
                 self._advance_station()
                 return self._begin_phase(ScanPhase.MOVING_TO_STATION)
             return None
@@ -235,11 +238,11 @@ class ScanStateMachine:
 
     # ── Frame stamping ────────────────────────────────────────────────────
 
-    def make_frame_meta(self, seq: int) -> FrameMeta:
+    def make_frame_meta(self, seq: int, captured_at=None) -> FrameMeta:
         """Create an immutable stamp for a frame captured RIGHT NOW."""
         return FrameMeta(
             seq         = seq,
-            captured_at = self._time_fn(),
+            captured_at = self._time_fn() if captured_at is None else captured_at,
             scan_id     = self._scan_id,
             station     = self.station,
             position    = self.position,
@@ -266,6 +269,8 @@ class ScanStateMachine:
         self._phase          = phase
         self._phase_started  = self._time_fn()
         self._phase_duration = self._phase_to_duration(phase)
+        if phase is ScanPhase.MOVING_TO_STATION:
+            self._phase_duration = self._move_seconds
         if phase is ScanPhase.SETTLING:
             self._next_after_settle = next_after
         # New scan_id whenever a detection window starts or we start moving
@@ -284,9 +289,7 @@ class ScanStateMachine:
 
     def _move_duration(self) -> float:
         """After station 4 the loop-back path is longer."""
-        if self._stations[self._station_idx] == 4:
-            return config.LOOP_AFTER_4_SECS
-        return config.MOVE_SECS
+        return self._move_seconds
 
     @staticmethod
     def _phase_to_duration(phase: ScanPhase) -> float:

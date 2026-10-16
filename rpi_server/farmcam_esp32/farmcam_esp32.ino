@@ -27,8 +27,8 @@
  * ============================================================
  *  !! CONFIGURE BEFORE FLASHING !!
  * ============================================================
- *  Set FARMER_PHONE and SIM800L_OWN below to your actual numbers.
- *  Do NOT commit the file with real phone numbers to git.
+ *  Copy device_config.example.h to device_config.h and configure it.
+ *  device_config.h is ignored by Git; keep your settings there.
  * ============================================================
  *
  * ============================================================
@@ -76,14 +76,14 @@
 #include <WebServer.h>
 #include <esp_task_wdt.h>   // Hardware watchdog
 
-// ─── !! SET THESE BEFORE FLASHING !! ─────────────────────────
-// Do not commit with real phone numbers.
-#define FARMER_PHONE    "639916425163"   // farmer handset (no '+')
-#define SIM800L_OWN     "639693141995"   // SIM inside SIM800L
-
-// ─── WiFi Credentials ────────────────────────────────────────
-const char* WIFI_SSID = "FarmCam";
-const char* WIFI_PASS = "farmcam1";
+// Local credentials are ignored by Git. Copy device_config.example.h first.
+#if __has_include("device_config.h")
+#include "device_config.h"
+#else
+#include "device_config.example.h"
+#endif
+const char* WIFI_SSID = FARMCAM_WIFI_SSID;
+const char* WIFI_PASS = FARMCAM_WIFI_PASS;
 
 // ─── Network ─────────────────────────────────────────────────
 #define ESP32_HTTP_PORT   80
@@ -145,6 +145,24 @@ bool pumpActive    = false;
 bool sim800lReady  = false;
 String simLastError  = "Not initialized";
 String smsLastResult = "none";
+unsigned long buzzerOffAt = 0;
+String smsBootId;
+struct SmsReceipt { String id; String status; String err; };
+SmsReceipt smsReceipts[32];
+int receiptCursor = 0;
+
+int receiptIndex(const String &id) {
+  if (!id.length()) return -1;
+  for (int i=0;i<32;i++) if (smsReceipts[i].id==id) return i;
+  return -1;
+}
+void recordReceipt(const String &id, const String &status, const String &err) {
+  if (!id.length()) return;
+  int index=receiptIndex(id);
+  if(index<0) { index=receiptCursor; receiptCursor=(receiptCursor+1)%32; }
+  smsReceipts[index]={id,status,err};
+}
+
 unsigned long simRetryAt = 0;
 bool simDiagnosticsPending = false;
 bool manualBuzz = false;
@@ -180,6 +198,7 @@ void servicePumpWatchdog() {
 
 void serviceHardware() {
   servicePumpWatchdog();
+  if (buzzerOffAt && (long)(millis()-buzzerOffAt)>=0) { buzzerOffAt=0; digitalWrite(BUZZER_PIN,LOW); }
   server.handleClient();
   servicePumpWatchdog();
   esp_task_wdt_reset();   // pet the hardware WDT
@@ -206,7 +225,7 @@ void buzzerCritical() { LOG("BUZZ","Pattern 3: CRITICAL SOS");
     for(int i=0;i<3;i++)_buzz(BUZZ_SHORT_MS,BUZZ_GAP_MS); _yieldHttp(BUZZ_PAUSE_MS);
     for(int i=0;i<3;i++)_buzz(BUZZ_LONG_MS, BUZZ_GAP_MS); _yieldHttp(BUZZ_PAUSE_MS);
     for(int i=0;i<3;i++)_buzz(BUZZ_SHORT_MS,BUZZ_GAP_MS); _yieldHttp(BUZZ_PAUSE_MS*3);}}
-void buzzerOFF()      { manualBuzz=false; digitalWrite(BUZZER_PIN,LOW); LOG("BUZZ","OFF"); }
+void buzzerOFF()      { buzzerOffAt=0; manualBuzz=false; digitalWrite(BUZZER_PIN,LOW); LOG("BUZZ","OFF"); }
 
 // ─── SIM800L helpers ─────────────────────────────────────────
 bool readModem(String &response, unsigned long waitMs,
@@ -265,6 +284,7 @@ bool prepareSMS() {
     simLastError="Not registered: "+r; return false;
   }
   if (!sendAT("AT+CMGF=1",r)) return false;
+  if (!sendAT("AT+CMGF?",r)) return false;
   String compact=r; compact.replace(" ","");
   if (compact.indexOf("+CMGF:1")<0) { simLastError="SMS text mode failed"; return false; }
   if (!sendAT("AT+CSCS=\"GSM\"",r)) return false;
@@ -339,10 +359,12 @@ void sendSMS_blocking(String to, String message) {
 
 // ─── Non-blocking SMS queue helpers ──────────────────────────
 bool queueSMS_ack(String id, String to, String msg) {
+  if (receiptIndex(id)>=0) return true;
   if (smsCount >= SMS_QUEUE_SIZE) return false;
   smsQueue[smsTail] = {id, to, msg};
   smsTail = (smsTail+1) % SMS_QUEUE_SIZE;
   smsCount++;
+  recordReceipt(id,"queued","");
   LOGF("SMS QUEUE","Enqueued id=%s to=%s", id.c_str(), to.c_str());
   return true;
 }
@@ -363,6 +385,7 @@ void serviceSmsSend() {
     }
     SmsItem &item = smsQueue[smsHead];
     smsCurrent_id  = item.id;
+    recordReceipt(item.id,"sending","");
     smsCurrent_to  = item.to;
     smsCurrent_msg = item.msg;
     smsHead = (smsHead+1) % SMS_QUEUE_SIZE;
@@ -420,6 +443,7 @@ void serviceSmsSend() {
 }
 
 void _smsSuccessAndAck() {
+  recordReceipt(smsCurrent_id,"sent","");
   LOG("SMS","SUBMITTED OK (+CMGS confirmed)");
   if (smsCurrent_id.length()>0) {
     String ack="SMSACK:{\"id\":\""+smsCurrent_id+"\",\"status\":\"sent\",\"err\":\"\"}";
@@ -430,6 +454,8 @@ void _smsSuccessAndAck() {
 }
 
 void _smsFailAndAck(String err) {
+  recordReceipt(smsCurrent_id, smsSendState==SMS_WAIT_CMGS || smsSendState==SMS_DONE ? "unknown" : "failed",err);
+  sim800l.write(27);
   smsLastResult="failed: "+err;
   if (smsCurrent_id.length()>0) {
     String ack="SMSACK:{\"id\":\""+smsCurrent_id+"\",\"status\":\"failed\",\"err\":\""
@@ -513,6 +539,12 @@ String processCommand(String cmd) {
   if (cmd.length()==0) return "ERR:empty";
   LOGF("CMD","%s",cmd.c_str());
 
+  if (cmd.startsWith("BUZZ_PULSE:")) {
+    int duration=cmd.substring(11).toInt();
+    if(duration<1 || duration>500) return "ERR:duration";
+    pendingBuzz=0; manualBuzz=false;
+    buzzerOffAt=millis()+duration; digitalWrite(BUZZER_PIN,HIGH); return "OK";
+  }
   if (cmd=="BUZZ_SPRAY")   { pendingBuzz=4; return "OK"; }
   if (cmd=="BUZZ_ALERT" || cmd=="BUZZ_PEST") { pendingBuzz=1; return "OK"; }
   if (cmd=="BUZZ_FUNGUS")  { pendingBuzz=2; return "OK"; }
@@ -525,7 +557,7 @@ String processCommand(String cmd) {
   }
   if (cmd=="PUMP_HOLD") {
     relayON(); pumpActive=true; pumpOffAt=millis()+4000;
-    pendingBuzz=0; manualBuzz=true; digitalWrite(BUZZER_PIN,HIGH);
+    pendingBuzz=0; buzzerOFF();
     LOG("PUMP","HOLD"); return "OK";
   }
   if (cmd=="PUMP_HEARTBEAT") {
@@ -550,16 +582,31 @@ String processCommand(String cmd) {
     // Parse {"id":"...","to":"...","msg":"..."}
     String id="",to="",msg="";
     auto extractField=[&](const String &key)->String {
-      int k=json.indexOf("\""+key+"\":");
+      int k=json.indexOf("\""+key+"\"");
       if(k<0) return "";
-      int q1=json.indexOf('"',k+key.length()+3);
-      int q2=json.indexOf('"',q1+1);
-      if(q1<0||q2<=q1) return "";
-      return json.substring(q1+1,q2);
+      int colon=json.indexOf(':',k+key.length()+2);
+      int start=json.indexOf('"',colon+1);
+      if(colon<0 || start<0) return "";
+      String value="";
+      bool escape=false;
+      for(int i=start+1;i<(int)json.length();i++) {
+        char c=json[i];
+        if(escape) {
+          if(c=='"'||c=='\\'||c=='/') value+=c;
+          else if(c=='n'||c=='r'||c=='t') value+=' ';
+          else return "";
+          escape=false;
+        } else if(c=='\\') escape=true;
+        else if(c=='"') return value;
+        else value+=c;
+      }
+      return "";
     };
     id=extractField("id"); to=extractField("to"); msg=extractField("msg");
     if(id.length()==0||to.length()==0||msg.length()==0)
       return "ERR:sms_json_parse_failed";
+    if(id.length()>64 || to.length()>16 || msg.length()>160) return "ERR:sms_too_long";
+    if(receiptIndex(id)>=0) return "OK:known:"+id;
     if(!queueSMS_ack(id,to,msg)) return "ERR:queue_full";
     return "OK:queued:"+id;
   }
@@ -594,7 +641,16 @@ void handleCmd() {
   if (!server.hasArg("plain")) { server.send(400,"text/plain","ERR:no_body"); return; }
   String body=server.arg("plain");
   String res=processCommand(body);
-  server.send(res.startsWith("ERR:")?400:200,"text/plain",res);
+  server.send(res=="ERR:queue_full"?503:(res.startsWith("ERR:")?400:200),"text/plain",res);
+}
+void handleSmsStatus() {
+  String id=server.arg("id");
+  int index=receiptIndex(id);
+  String status=index<0?"unknown":smsReceipts[index].status;
+  String err=index<0?"Message ID not retained":smsReceipts[index].err;
+  server.send(200,"application/json",String("{\"id\":")+jsonString(id)
+    +",\"boot_id\":"+jsonString(smsBootId)+",\"status\":"+jsonString(status)
+    +",\"err\":"+jsonString(err)+"}");
 }
 void handleStatus() {
   server.send(200,"application/json",processCommand("STATUS"));
@@ -617,6 +673,7 @@ void connectWiFi() {
 
 // ─── Setup ───────────────────────────────────────────────────
 void setup() {
+  smsBootId=String((uint32_t)esp_random(),HEX)+String((uint32_t)esp_random(),HEX);
   Serial.begin(USB_BAUD);
   Serial.setTimeout(20);
   sim800l.begin(SIM_BAUD, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
@@ -625,7 +682,13 @@ void setup() {
   relayOFF(); buzzerOFF();
 
   // Hardware WDT — resets ESP32 if loop() freezes for WDT_TIMEOUT_S seconds
-  esp_task_wdt_init(WDT_TIMEOUT_S, true);
+  esp_task_wdt_config_t watchdogConfig = {};
+  watchdogConfig.timeout_ms = WDT_TIMEOUT_S * 1000;
+  watchdogConfig.idle_core_mask = 0;
+  watchdogConfig.trigger_panic = true;
+  if (esp_task_wdt_init(&watchdogConfig) == ESP_ERR_INVALID_STATE) {
+    esp_task_wdt_reconfigure(&watchdogConfig);
+  }
   esp_task_wdt_add(NULL);
 
   Serial.println();
@@ -640,6 +703,7 @@ void setup() {
 
   server.on("/cmd",    HTTP_POST, handleCmd);
   server.on("/status", HTTP_GET,  handleStatus);
+  server.on("/sms/status", HTTP_GET, handleSmsStatus);
   server.onNotFound(handleNotFound);
   server.begin();
   LOGF("HTTP","Server on port %d", ESP32_HTTP_PORT);
@@ -667,7 +731,7 @@ void loop() {
     else if(kind==4) { LOG("BUZZ","2.5 s spray tone"); _buzz(2500,0); }
   }
 
-  if (simDiagnosticsPending && !pumpActive) {
+  if (simDiagnosticsPending && !pumpActive && smsSendState == SMS_IDLE) {
     simDiagnosticsPending=false; diagnoseSIM();
   }
 

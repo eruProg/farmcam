@@ -26,8 +26,8 @@ LOOP_AFTER_4_SECS   = 15.0
 SETTLE_SECS         = 1.0
 
 # Cycle time formula (for reference / documentation):
-# T_cycle = 4*(DETECT*2 + T_down + T_up) + 3*MOVE + LOOP
-#         = 4*(30+30+5+5) + 3*10 + 15 = 325 s ≈ 5 min 25 s
+# T_cycle = 4*(DETECT*2 + T_down + T_up + 2*SETTLE) + 3*MOVE + LOOP
+#         = 4*(30+30+5+5+2*1) + 3*10 + 15 = 333 s
 
 # ---------------------------------------------------------------------------
 # Station ROIs — normalized [x1, y1, x2, y2] in 0..1 range

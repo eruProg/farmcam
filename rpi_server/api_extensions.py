@@ -72,37 +72,16 @@ def register_extensions(
         if sm is not None:
             return sm.state_dict()
 
-        # Fallback — translate legacy globals
-        phase_map = {
-            "DETECT_A":  "DETECT_UPPER",
-            "DETECT_B":  "DETECT_LOWER",
-            "PAUSE_5":   "TRANSIT_TO_LOWER",
-            "MOVING":    "MOVING_TO_STATION",
-            "DETECTING": "DETECT_UPPER",
-        }
-        legacy = state.get("current_state", "IDLE")
-        phase  = phase_map.get(legacy, "IDLE")
-        return {
-            "phase":            phase,
-            "phase_label":      _label(phase),
-            "position":         "lower" if phase == "DETECT_LOWER" else "upper",
-            "station":          state.get("active_station_id", 1),
-            "scan_id":          "",
-            "is_detecting":     phase.startswith("DETECT"),
-            "remaining_s":      0,
-            "phase_duration_s": 0,
-            "progress":         0,
-            "server_time":      time.monotonic(),
-        }
+        raise HTTPException(status_code=503, detail='Scan controller unavailable')
 
     # ── Track logs ────────────────────────────────────────────────
 
     @app.get("/api/logs")
     async def api_logs(
-        station:   Optional[int] = FQuery(None),
+        station:   Optional[int] = FQuery(None, ge=1, le=4),
         cls:       Optional[str] = FQuery(None, alias="class"),
-        status:    Optional[str] = FQuery("active"),
-        is_fp:     Optional[int] = FQuery(None),
+        status:    Optional[str] = FQuery(None),
+        is_fp:     Optional[int] = FQuery(None, ge=0, le=1),
         date_from: Optional[float] = FQuery(None),
         date_to:   Optional[float] = FQuery(None),
         page:      int = FQuery(1, ge=1),
@@ -113,6 +92,10 @@ def register_extensions(
         Replaces the old log-based /api/logs endpoint if PersistenceDB is live.
         Falls back to legacy detection_logs query if DB is not yet connected.
         """
+        if status not in (None, 'active', 'resolved') or cls not in (None, 'whiteflies', 'whitefly', 'worm', 'fungus'):
+            raise HTTPException(status_code=422, detail='Invalid track filter')
+        if date_from is not None and date_to is not None and date_from > date_to:
+            raise HTTPException(status_code=422, detail='Invalid date range')
         state = get_state()
         db    = state.get("db")
         if db is not None:
@@ -128,36 +111,7 @@ def register_extensions(
                 page_size = page_size,
             )
 
-        # Legacy fallback — query detection_logs table directly
-        try:
-            import sqlite3, json
-            conn = sqlite3.connect(config.DB_PATH, timeout=5)
-            conn.row_factory = sqlite3.Row
-            offset = (page - 1) * page_size
-            where_parts = []
-            params: list = []
-            if station  is not None: where_parts.append("station_id=?");  params.append(station)
-            if cls      is not None: where_parts.append("class_name=?");  params.append(cls)
-            where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM detection_logs {where}", params
-            ).fetchone()[0]
-            rows = conn.execute(
-                f"SELECT * FROM detection_logs {where} ORDER BY timestamp DESC "
-                f"LIMIT ? OFFSET ?",
-                params + [page_size, offset]
-            ).fetchall()
-            conn.close()
-            return {
-                "items":     [dict(r) for r in rows],
-                "total":     total,
-                "page":      page,
-                "page_size": page_size,
-                "pages":     max(1, -(-total // page_size)),
-            }
-        except Exception as exc:
-            log.error("api_logs legacy fallback error: %s", exc)
-            return {"items": [], "total": 0, "page": 1, "pages": 1}
+        raise HTTPException(status_code=503, detail='Detection storage unavailable')
 
     @app.post("/api/logs/{track_id}/false-positive")
     async def api_mark_fp(track_id: str):
@@ -177,28 +131,11 @@ def register_extensions(
         state = get_state()
         cm    = state.get("cooldown_mgr")
         if cm is None:
-            # Legacy: return dummy cooldown from pump globals
-            pump_active = state.get("pump_active", False)
-            pump_cd     = state.get("pump_last_spray_time", 0)
-            elapsed     = time.time() - pump_cd if pump_cd else 9999
-            remaining   = max(0.0, config.PUMP_COOLDOWN_S - elapsed)
-            return {
-                "pump": {
-                    "active":    remaining > 0,
-                    "remaining_s": round(remaining, 1),
-                    "total_s":   config.PUMP_COOLDOWN_S,
-                    "last_triggered_at": pump_cd if pump_cd else None,
-                },
-                "sms": {
-                    "active":    False,
-                    "remaining_s": 0,
-                    "total_s":   config.SMS_COOLDOWN_S,
-                    "last_triggered_at": None,
-                },
-            }
+            raise HTTPException(status_code=503, detail='Cooldown storage unavailable')
         return {
             "pump": cm.status("pump", config.PUMP_COOLDOWN_S),
             "sms":  cm.status("sms",  config.SMS_COOLDOWN_S),
+            "buzzer_muted": state['buzzer_scheduler'].is_muted if state.get('buzzer_scheduler') else None,
         }
 
     # ── SMS status ────────────────────────────────────────────────
@@ -209,14 +146,7 @@ def register_extensions(
         broker = state.get("sms_broker")
         if broker is not None:
             return broker.last_status()
-        return {
-            "id":        None,
-            "to":        None,
-            "status":    "unavailable",
-            "err":       "SmsBroker not active",
-            "queued_at": None,
-            "sent_at":   None,
-        }
+        raise HTTPException(status_code=503, detail='SMS unavailable')
 
     # ── SMS test ──────────────────────────────────────────────────
 
@@ -232,7 +162,12 @@ def register_extensions(
                                 "Set FARMCAM_FARMER_PHONE env var or pass ?phone=")
         if broker is None:
             raise HTTPException(status_code=503, detail="SmsBroker not active")
-        msg_id = broker.send(target, "FarmCam SMS test OK")
+        try:
+            msg_id = broker.send(target, "FarmCam SMS test OK")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not msg_id:
+            raise HTTPException(status_code=503, detail='SMS queue full')
         log.info("api_sms_test: queued %s to %s", msg_id, target)
         return {"ok": True, "msg_id": msg_id, "to": target}
 
@@ -246,10 +181,7 @@ def register_extensions(
             scheduler.mute(body.muted)
             log.info("api_buzzer_mute: muted=%s", body.muted)
             return {"ok": True, "muted": body.muted}
-        # Legacy fallback — flip the module-level boolean if BuzzerScheduler not wired
-        import main as _main
-        _main.buzzer_muted = body.muted
-        return {"ok": True, "muted": body.muted, "note": "legacy fallback"}
+        raise HTTPException(status_code=503, detail='Buzzer unavailable')
 
     # ── Config export ─────────────────────────────────────────────
 
@@ -266,7 +198,7 @@ def register_extensions(
             "settle_secs":         config.SETTLE_SECS,
             "cycle_time_secs":     4 * (config.DETECT_WINDOW_SECS * 2
                                         + config.TRANSIT_DOWN_SECS
-                                        + config.TRANSIT_UP_SECS)
+                                        + config.TRANSIT_UP_SECS + 2 * config.SETTLE_SECS)
                                    + 3 * config.MOVE_SECS
                                    + config.LOOP_AFTER_4_SECS,
             # Thresholds
@@ -303,7 +235,8 @@ def register_extensions(
             "retention_max_gb":     config.RETENTION_MAX_GB,
             "retention_max_days":   config.RETENTION_MAX_DAYS,
             # Hardware
-            "buzzer_pin":           config.BUZZER_PIN,
+            "buzzer_pin":           26,
+            "buzzer_controller":    "ESP32",
             "pump_pin":             config.PUMP_PIN,
             "esp32_ip":             config.ESP32_IP,
             "esp32_port":           config.ESP32_PORT,
@@ -324,23 +257,24 @@ def register_extensions(
 
     # ── Snapshot serving ──────────────────────────────────────────
 
-    @app.get("/api/snapshots/{filename}")
+    @app.get('/api/snapshots/{filename:path}')
     async def api_snapshot(filename: str):
-        """Serve a snapshot (full or thumb) from the snapshot directory."""
-        # Security: ensure no path traversal
-        safe_name = Path(filename).name
-        for search_dir in (
-            config.SNAPSHOT_DIR,
-            config.REJECTED_DIR,
-            config.CALIB_DIR,
-        ):
-            candidate = Path(search_dir) / safe_name
-            if candidate.is_file():
-                return FileResponse(
-                    str(candidate),
-                    media_type="image/jpeg" if safe_name.endswith(".jpg") else "image/png",
-                )
-        raise HTTPException(status_code=404, detail=f"Snapshot '{safe_name}' not found")
+        root = Path(config.SNAPSHOT_DIR).resolve()
+        candidate = (root / filename).resolve()
+        if not candidate.is_relative_to(root) or candidate.suffix.lower() not in ('.jpg', '.png'):
+            raise HTTPException(status_code=404, detail='Snapshot not found')
+        if not candidate.is_file():
+            raise HTTPException(status_code=404, detail='Snapshot not found')
+        return FileResponse(str(candidate), media_type='image/jpeg' if candidate.suffix.lower() == '.jpg' else 'image/png')
+
+    @app.post('/api/logs/{track_id}/review')
+    async def api_review(track_id: str):
+        db = get_state().get('db')
+        if db is None:
+            raise HTTPException(status_code=503, detail='Detection storage unavailable')
+        if not db.mark_reviewed(track_id):
+            raise HTTPException(status_code=404, detail='Track not found')
+        return {'ok': True}
 
     # ── Patch /api/system to include scan_state ───────────────────
     # We don't modify the existing /api/system function — instead we

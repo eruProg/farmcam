@@ -144,12 +144,15 @@ class ApiService {
           .post(Uri.parse('$_base/api/pump/$action'))
           .timeout(Duration(seconds: action == 'heartbeat' ? 2 : 6));
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
-      if (resp.statusCode == 200 && data['ok'] == true &&
+      if (resp.statusCode == 200 &&
+          data['ok'] == true &&
           (!requireActive || data['active'] == true)) {
         return const PumpCommandResult(true);
       }
-      return PumpCommandResult(false, data['error']?.toString() ??
-          'Pump command was not confirmed. Check the Pi-to-ESP32 connection.');
+      return PumpCommandResult(
+          false,
+          data['error']?.toString() ??
+              'Pump command was not confirmed. Check the Pi-to-ESP32 connection.');
     } catch (_) {
       return const PumpCommandResult(false,
           'Cannot confirm the pump command. Check the Raspberry Pi connection.');
@@ -191,7 +194,7 @@ class ApiService {
   Future<Map<String, dynamic>?> getScanStatus() async {
     try {
       final resp = await http
-          .get(Uri.parse('$_base/api/system'))
+          .get(Uri.parse('$_base/api/scan/state'))
           .timeout(const Duration(seconds: 5));
       if (resp.statusCode == 200) {
         final data = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -210,29 +213,80 @@ class ApiService {
   /// Paginated track list from /api/logs.
   /// Returns {"items": [...], "total": n, "pages": n, "page": n}.
   Future<Map<String, dynamic>> getTracksPage({
-    int?    station,
+    int? station,
     String? cls,
     String? status,
-    int     page     = 1,
-    int     pageSize = 20,
+    int page = 1,
+    int pageSize = 20,
+    bool? isFalsePositive,
+    DateTime? dateFrom,
+    DateTime? dateTo,
   }) async {
     final params = <String, String>{
-      'page':      page.toString(),
+      'page': page.toString(),
       'page_size': pageSize.toString(),
     };
     if (station != null) params['station'] = station.toString();
-    if (cls     != null) params['class']   = cls;
-    if (status  != null) params['status']  = status;
+    if (cls != null) params['class'] = cls;
+    if (status != null) params['status'] = status;
+    if (isFalsePositive != null) params['is_fp'] = isFalsePositive ? '1' : '0';
+    if (dateFrom != null) {
+      params['date_from'] = (dateFrom.millisecondsSinceEpoch / 1000).toString();
+    }
+    if (dateTo != null) {
+      params['date_to'] = (dateTo.millisecondsSinceEpoch / 1000).toString();
+    }
 
-    try {
-      final uri  = Uri.parse('$_base/api/logs').replace(queryParameters: params);
-      final resp = await http.get(uri).timeout(const Duration(seconds: 8));
-      if (resp.statusCode == 200) {
-        return jsonDecode(resp.body) as Map<String, dynamic>;
-      }
-    } catch (_) {}
-    return {'items': [], 'total': 0, 'page': 1, 'pages': 1};
+    return _json('/api/logs?${Uri(queryParameters: params).query}');
   }
+
+  Future<Map<String, dynamic>> _json(String route,
+      {bool post = false, Map<String, dynamic>? body}) async {
+    final uri = Uri.parse('$_base$route');
+    final response = await (post
+            ? http.post(uri,
+                headers: {'Content-Type': 'application/json'},
+                body: jsonEncode(body ?? {}))
+            : http.get(uri))
+        .timeout(const Duration(seconds: 6));
+    final data = jsonDecode(response.body);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+          data is Map ? data['detail'] ?? 'Request failed' : 'Request failed');
+    }
+    if (data is! Map<String, dynamic>) {
+      throw const FormatException('Invalid server response');
+    }
+    return data;
+  }
+
+  Future<Map<String, dynamic>> fetchConfig() => _json('/api/config');
+  Future<Map<String, dynamic>> fetchPrecision() => _json('/api/precision');
+  Future<Map<String, dynamic>> testSms([String? phone]) => _json(
+      '/api/sms/test${phone == null ? '' : '?phone=${Uri.encodeQueryComponent(phone)}'}',
+      post: true);
+  Future<bool> setBuzzerMute(bool muted) async {
+    try {
+      final data =
+          await _json('/api/buzzer/mute', post: true, body: {'muted': muted});
+      return data['ok'] == true && data['muted'] == muted;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> markReviewed(String id) async {
+    try {
+      return (await _json('/api/logs/${Uri.encodeComponent(id)}/review',
+              post: true))['ok'] ==
+          true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String snapshotUrl(String relativePath) =>
+      '$_base/api/snapshots/${relativePath.split('/').map(Uri.encodeComponent).join('/')}';
 
   /// Mark a track as a false positive.  Returns true on success.
   Future<bool> markFalsePositive(String trackId) async {
@@ -255,7 +309,8 @@ class ApiService {
           .get(Uri.parse('$_base/api/cooldowns'))
           .timeout(const Duration(seconds: 5));
       if (resp.statusCode == 200) {
-        return jsonDecode(resp.body) as Map<String, dynamic>;
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        return data['pump'] is Map && data['sms'] is Map ? data : null;
       }
     } catch (_) {}
     return null;

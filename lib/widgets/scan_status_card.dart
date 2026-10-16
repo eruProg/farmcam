@@ -15,22 +15,20 @@
 library;
 
 import 'dart:async';
-import 'dart:math';
+import '../data/scan_state_model.dart';
 
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
 
 // ── Colors (must match dashboard palette) ───────────────────────
-const _bg     = Color(0xFF09090B);
-const _card   = Color(0xFF18181B);
-const _border = Color(0xFF27272A);
-const _fg     = Color(0xFFFAFAFA);
-const _muted  = Color(0xFF71717A);
-const _green  = Color(0xFF22C55E);
-const _amber  = Color(0xFFF59E0B);
-const _blue   = Color(0xFF3B82F6);
-const _red    = Color(0xFFEF4444);
+const _card = Color(0xFFFFFFFF);
+const _border = Color(0xFFE4E4E7);
+const _fg = Color(0xFF18181B);
+const _muted = Color(0xFF71717A);
+const _green = Color(0xFF16A34A);
+const _amber = Color(0xFFD97706);
+const _blue = Color(0xFF3B82F6);
 
 // ── Phase ordering for the stepper dots ─────────────────────────
 const _phaseOrder = [
@@ -57,14 +55,10 @@ class ScanStatusCard extends StatefulWidget {
 
 class _ScanStatusCardState extends State<ScanStatusCard>
     with SingleTickerProviderStateMixin {
-
   // Server-authoritative state
   Map<String, dynamic> _state = {};
-  double _serverProgress = 0.0;
-  double _serverRemaining = 0.0;
-  double _phaseDuration = 1.0;
-  double _serverTime = 0.0;
-  double _phaseStartedAt = 0.0;
+  final _timing = ScanStateModel();
+  bool _fetching = false;
 
   // Local smooth progress
   double _localProgress = 0.0;
@@ -74,7 +68,6 @@ class _ScanStatusCardState extends State<ScanStatusCard>
   // Demo mode
   int _demoPhaseIdx = 0;
   int _demoStation = 1;
-  double _demoElapsed = 0.0;
   late AnimationController _demoAnim;
 
   @override
@@ -115,13 +108,13 @@ class _ScanStatusCardState extends State<ScanStatusCard>
 
   void _demoState() {
     _state = {
-      'phase':           _phaseOrder[_demoPhaseIdx],
-      'phase_label':     _phaseLabelFor(_phaseOrder[_demoPhaseIdx]),
-      'position':        _positionFor(_phaseOrder[_demoPhaseIdx]),
-      'station':         _demoStation,
-      'scan_id':         'demo-scan',
-      'remaining_s':     (6.0 * (1 - _localProgress)).round(),
-      'is_detecting':    _phaseOrder[_demoPhaseIdx].startsWith('DETECT'),
+      'phase': _phaseOrder[_demoPhaseIdx],
+      'phase_label': _phaseLabelFor(_phaseOrder[_demoPhaseIdx]),
+      'position': _positionFor(_phaseOrder[_demoPhaseIdx]),
+      'station': _demoStation,
+      'scan_id': 'demo-scan',
+      'remaining_s': (6.0 * (1 - _localProgress)).round(),
+      'is_detecting': _phaseOrder[_demoPhaseIdx].startsWith('DETECT'),
       'phase_duration_s': 6.0,
     };
   }
@@ -129,33 +122,32 @@ class _ScanStatusCardState extends State<ScanStatusCard>
   // ── Live poll ─────────────────────────────────────────────────────
 
   void _startPoll() {
-    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _fetchState());
+    _pollTimer =
+        Timer.periodic(const Duration(seconds: 2), (_) => _fetchState());
     _fetchState();
     _smoothTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      if (_phaseDuration <= 0 || !mounted) return;
-      final now = DateTime.now().millisecondsSinceEpoch / 1000.0;
-      final elapsed = now - _phaseStartedAt - (_serverTime > 0
-          ? (DateTime.now().millisecondsSinceEpoch / 1000.0 - _serverTime)
-          : 0.0);
-      final p = max(0.0, min(1.0, elapsed / _phaseDuration));
-      setState(() => _localProgress = p);
+      if (mounted) setState(() => _localProgress = _timing.progress);
     });
   }
 
   Future<void> _fetchState() async {
+    if (_fetching) return;
+    _fetching = true;
+    final sent = _timing.now;
     try {
       final data = await widget.api.getScanStatus();
-      if (data == null || !mounted) return;
+      if (!mounted) return;
+      if (data == null) throw const FormatException('Scan unavailable');
       setState(() {
-        _state            = data;
-        _serverProgress   = (data['progress'] as num?)?.toDouble() ?? 0.0;
-        _serverRemaining  = (data['remaining_s'] as num?)?.toDouble() ?? 0.0;
-        _phaseDuration    = (data['phase_duration_s'] as num?)?.toDouble() ?? 1.0;
-        _phaseStartedAt   = (data['phase_started_at'] as num?)?.toDouble() ?? 0.0;
-        _serverTime       = (data['server_time'] as num?)?.toDouble() ?? 0.0;
-        _localProgress    = _serverProgress;
+        _timing.update(data, sent, _timing.now);
+        _state = _timing.state;
+        _localProgress = _timing.progress;
       });
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) setState(_timing.disconnect);
+    } finally {
+      _fetching = false;
+    }
   }
 
   @override
@@ -170,19 +162,35 @@ class _ScanStatusCardState extends State<ScanStatusCard>
 
   @override
   Widget build(BuildContext context) {
-    final phase    = (widget.demoMode ? _phaseOrder[_demoPhaseIdx] : _state['phase'] as String?) ?? 'IDLE';
-    final label    = (widget.demoMode ? _phaseLabelFor(phase) : _state['phase_label'] as String?) ?? 'Idle';
-    final position = (widget.demoMode ? _positionFor(phase) : _state['position'] as String?) ?? 'upper';
-    final station  = (widget.demoMode ? _demoStation : (_state['station'] as num?)?.toInt()) ?? 1;
+    final phase = (widget.demoMode
+            ? _phaseOrder[_demoPhaseIdx]
+            : _state['phase'] as String?) ??
+        'IDLE';
+    final phaseLabel = (widget.demoMode
+            ? _phaseLabelFor(phase)
+            : _state['phase_label'] as String?) ??
+        'Idle';
+    final label =
+        !widget.demoMode && !_timing.connected ? 'Disconnected' : phaseLabel;
+    final position = (widget.demoMode
+            ? _positionFor(phase)
+            : _state['position'] as String?) ??
+        'upper';
+    final station = (widget.demoMode
+            ? _demoStation
+            : (_state['station'] as num?)?.toInt()) ??
+        1;
     final remaining = (widget.demoMode
-        ? (6.0 * (1 - _localProgress)).roundToDouble()
-        : _serverRemaining - ((_localProgress - _serverProgress) * _phaseDuration))
+            ? (6.0 * (1 - _localProgress)).roundToDouble()
+            : _timing.remaining)
         .clamp(0.0, 9999.0);
     final isDetecting = (widget.demoMode
-        ? phase.startsWith('DETECT')
-        : _state['is_detecting'] as bool?) ?? false;
+            ? phase.startsWith('DETECT')
+            : _state['is_detecting'] as bool?) ??
+        false;
 
-    final barColor = isDetecting ? _green : (phase.contains('TRANSIT') ? _amber : _blue);
+    final barColor =
+        isDetecting ? _green : (phase.contains('TRANSIT') ? _amber : _blue);
 
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
@@ -204,7 +212,9 @@ class _ScanStatusCardState extends State<ScanStatusCard>
                 child: Text(
                   label,
                   style: const TextStyle(
-                    color: _fg, fontSize: 13, fontWeight: FontWeight.w600,
+                    color: _fg,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
@@ -229,7 +239,10 @@ class _ScanStatusCardState extends State<ScanStatusCard>
               ),
               const SizedBox(width: 6),
               if (isDetecting)
-                _InfoChip(icon: Icons.timer_outlined, label: '${remaining.toStringAsFixed(0)}s', color: _muted),
+                _InfoChip(
+                    icon: Icons.timer_outlined,
+                    label: '${remaining.toStringAsFixed(0)}s',
+                    color: _muted),
               const Spacer(),
               // Phase step dots
               _PhaseStepper(currentPhase: phase),
@@ -242,13 +255,13 @@ class _ScanStatusCardState extends State<ScanStatusCard>
 
   static String _phaseLabelFor(String phase) {
     const m = {
-      'IDLE':              'Idle',
+      'IDLE': 'Idle',
       'MOVING_TO_STATION': 'Moving to next station',
-      'SETTLING':          'Settling…',
-      'DETECT_UPPER':      'Detecting — Upper',
-      'TRANSIT_TO_LOWER':  'Lowering camera',
-      'TRANSIT_TO_UPPER':  'Raising camera',
-      'DETECT_LOWER':      'Detecting — Lower',
+      'SETTLING': 'Settling…',
+      'DETECT_UPPER': 'Detecting — Upper',
+      'TRANSIT_TO_LOWER': 'Lowering camera',
+      'TRANSIT_TO_UPPER': 'Raising camera',
+      'DETECT_LOWER': 'Detecting — Lower',
     };
     return m[phase] ?? phase;
   }
@@ -278,13 +291,17 @@ class _PhaseDotState extends State<_PhaseDot>
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this,
-        duration: const Duration(milliseconds: 900))..repeat(reverse: true);
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
     _opacity = Tween<double>(begin: 0.3, end: 1.0).animate(_ctrl);
   }
 
   @override
-  void dispose() { _ctrl.dispose(); super.dispose(); }
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -292,9 +309,14 @@ class _PhaseDotState extends State<_PhaseDot>
     return FadeTransition(
       opacity: _opacity,
       child: Container(
-        width: 8, height: 8,
-        decoration: BoxDecoration(color: color, shape: BoxShape.circle,
-            boxShadow: [BoxShadow(color: color.withOpacity(0.4), blurRadius: 4)]),
+        width: 8,
+        height: 8,
+        decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(color: color.withValues(alpha: 0.4), blurRadius: 4)
+            ]),
       ),
     );
   }
@@ -302,24 +324,24 @@ class _PhaseDotState extends State<_PhaseDot>
 
 class _SmoothProgressBar extends StatelessWidget {
   final double progress;
-  final Color  color;
+  final Color color;
   const _SmoothProgressBar({required this.progress, required this.color});
 
   @override
   Widget build(BuildContext context) => ClipRRect(
-    borderRadius: BorderRadius.circular(4),
-    child: TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: progress, end: progress),
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
-      builder: (_, v, __) => LinearProgressIndicator(
-        value: v.clamp(0.0, 1.0),
-        minHeight: 5,
-        backgroundColor: _border,
-        valueColor: AlwaysStoppedAnimation<Color>(color),
-      ),
-    ),
-  );
+        borderRadius: BorderRadius.circular(4),
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: progress, end: progress),
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+          builder: (_, v, __) => LinearProgressIndicator(
+            value: v.clamp(0.0, 1.0),
+            minHeight: 5,
+            backgroundColor: _border,
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+      );
 }
 
 class _StationChips extends StatelessWidget {
@@ -331,7 +353,7 @@ class _StationChips extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: List.generate(4, (i) {
-        final n       = i + 1;
+        final n = i + 1;
         final isActive = n == activeStation;
         return AnimatedContainer(
           duration: const Duration(milliseconds: 250),
@@ -369,12 +391,17 @@ class _PhaseStepper extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: List.generate(_phaseOrder.length, (i) {
         Color c;
-        if (i < idx)       c = _green.withOpacity(0.5);
-        else if (i == idx) c = _green;
-        else               c = _border;
+        if (i < idx) {
+          c = _green.withValues(alpha: 0.5);
+        } else if (i == idx) {
+          c = _green;
+        } else {
+          c = _border;
+        }
         return Container(
           margin: const EdgeInsets.only(left: 3),
-          width: 6, height: 6,
+          width: 6,
+          height: 6,
           decoration: BoxDecoration(color: c, shape: BoxShape.circle),
         );
       }),
@@ -386,15 +413,18 @@ class _InfoChip extends StatelessWidget {
   final IconData icon;
   final String label;
   final Color color;
-  const _InfoChip({required this.icon, required this.label, required this.color});
+  const _InfoChip(
+      {required this.icon, required this.label, required this.color});
 
   @override
   Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Icon(icon, size: 11, color: color),
-      const SizedBox(width: 3),
-      Text(label, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w500)),
-    ],
-  );
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 11, color: color),
+          const SizedBox(width: 3),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 11, color: color, fontWeight: FontWeight.w500)),
+        ],
+      );
 }

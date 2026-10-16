@@ -1,207 +1,143 @@
+"""Bounded SMS queue with correlated ESP32 HTTP acknowledgements.
+Sent means +CMGS modem submission, not delivery to the recipient's handset.
 """
-sms_broker.py — Pi-side SMS broker with JSON-line ACK tracking
-==============================================================
-Sends SMS via the ESP32 HTTP command interface.
-Implements:
-  - UUID-tagged message IDs for end-to-end ACK tracking
-  - Retry with exponential backoff (up to SMS_MAX_RETRIES)
-  - Per-message delivery status exposed in /api/system
-  - Thread-safe queue (one sender thread)
-
-Protocol (ESP32 side must support SMS_JSON command):
-  Pi → ESP32 POST /cmd:
-      SMS_JSON:{"id":"<uuid>","to":"+63...","msg":"<text>"}
-  ESP32 → Pi (immediate):
-      OK:queued:<id>
-  ESP32 → Pi (async, via /api/sms/ack poll or future callback):
-      SMSACK:{"id":"<id>","status":"sent"|"failed","err":"<reason>"}
-
-Until the ESP32 firmware supports async ACK, this broker polls
-GET /status on the ESP32 and infers delivery from sms_result field.
-"""
-
-from __future__ import annotations
-
 import json
-import logging
 import queue
+import re
 import threading
 import time
+import urllib.request
+import urllib.error
 import uuid
-from typing import Any, Callable, Dict, List, Optional
-
 import config
 
-log = logging.getLogger("farmcam.sms")
-
-_PENDING_ACK: Dict[str, dict] = {}   # msg_id -> delivery status
-_ACK_LOCK = threading.Lock()
-
-
 class SmsBroker:
-    """
-    Thread-safe SMS sender.  Call start() once at server boot.
-    Use send() to queue a message; it returns a msg_id immediately.
-    """
-
-    def __init__(
-        self,
-        esp32_ip:   str  = None,
-        esp32_port: int  = None,
-        clock_fn:   Callable[[], float] = None,
-    ) -> None:
-        self._ip     = esp32_ip   or config.ESP32_IP
-        self._port   = esp32_port or config.ESP32_PORT
-        self._clock  = clock_fn or time.time
-        self._queue: queue.Queue = queue.Queue(maxsize=20)
-        self._thread: Optional[threading.Thread] = None
-        self._running = False
-        self._last_status: Dict[str, Any] = {
-            "id": None, "to": None, "status": "idle",
-            "err": "", "queued_at": None, "sent_at": None,
-        }
+    def __init__(self, esp32_ip=None, esp32_port=None, clock_fn=None):
+        self._base = f'http://{esp32_ip or config.ESP32_IP}:{esp32_port or config.ESP32_PORT}'
+        self._clock = clock_fn or time.time
+        self._queue = queue.Queue(maxsize=20)
         self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._statuses = {}
+        self._last_id = None
 
-    # ── Public API ────────────────────────────────────────────────────────
-
-    def start(self) -> None:
-        self._running = True
-        self._thread  = threading.Thread(
-            target=self._sender_loop, daemon=True, name="sms_broker"
-        )
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._sender_loop, daemon=True, name='sms')
         self._thread.start()
 
-    def stop(self) -> None:
-        self._running = False
+    def stop(self):
+        self._stop.set()
         if self._thread:
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=6)
 
-    def send(self, to: str, msg: str) -> str:
-        """
-        Queue an SMS.  Returns msg_id immediately (does not block).
-        Silently drops the message if the queue is full (max 20).
-        """
-        if not to:
-            log.warning("sms_broker.send: no recipient — set FARMCAM_FARMER_PHONE")
-            return ""
-        msg_id = str(uuid.uuid4())
-        item = {
-            "id":        msg_id,
-            "to":        to,
-            "msg":       msg[:160],
-            "queued_at": self._clock(),
-            "retries":   0,
-        }
-        try:
-            self._queue.put_nowait(item)
-            with self._lock:
-                self._last_status = {
-                    "id": msg_id, "to": to, "status": "queued",
-                    "err": "", "queued_at": item["queued_at"], "sent_at": None,
-                }
-            log.info("sms queued id=%s to=%s", msg_id[:8], to)
-        except queue.Full:
-            log.warning("sms_broker: queue full, dropping message")
-        return msg_id
-
-    def last_status(self) -> Dict[str, Any]:
+    def send(self, to, msg):
+        if not re.fullmatch(r'\+?[0-9]{10,15}', to or ''):
+            raise ValueError('Use a phone number with country code')
+        # The SIM800L transport uses text mode and the firmware's compact JSON
+        # parser. Keep the payload printable ASCII, without UART control bytes.
+        message = ''.join(c if 32 <= ord(c) <= 126 else ' ' for c in msg)[:160]
+        item = dict(id=str(uuid.uuid4()), to=to, msg=message, queued_at=self._clock())
         with self._lock:
-            return dict(self._last_status)
-
-    # ── Sender thread ─────────────────────────────────────────────────────
-
-    def _sender_loop(self) -> None:
-        while self._running:
+            self._statuses[item['id']] = dict(item, status='queued', err='', sent_at=None)
             try:
-                item = self._queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
+                self._queue.put_nowait(item)
+            except queue.Full:
+                del self._statuses[item['id']]
+                return ''
+            self._last_id = item['id']
+            if len(self._statuses) > 100:
+                self._statuses.pop(next(iter(self._statuses)))
+        return item['id']
 
-            for attempt in range(config.SMS_MAX_RETRIES + 1):
-                if not self._running:
-                    break
-                ok, err = self._do_send(item)
-                if ok:
-                    self._update_status(item, "sent", "")
-                    log.info("sms sent id=%s attempt=%d", item["id"][:8], attempt + 1)
-                    break
-                else:
-                    if attempt < config.SMS_MAX_RETRIES:
-                        backoff = config.SMS_RETRY_BACKOFF_S[
-                            min(attempt, len(config.SMS_RETRY_BACKOFF_S) - 1)
-                        ]
-                        log.warning(
-                            "sms failed id=%s attempt=%d err=%s retrying in %ds",
-                            item["id"][:8], attempt + 1, err, backoff
-                        )
-                        time.sleep(backoff)
-                    else:
-                        self._update_status(item, "failed", err)
-                        log.error("sms permanently failed id=%s err=%s",
-                                  item["id"][:8], err)
-
-    def _do_send(self, item: dict) -> tuple[bool, str]:
-        """Send one SMS via ESP32 HTTP.  Returns (ok, err_str)."""
-        try:
-            import urllib.request
-            import urllib.error
-
-            # Build JSON-tagged command for the ACK protocol
-            cmd = "SMS_JSON:" + json.dumps({
-                "id":  item["id"],
-                "to":  item["to"] if item["to"].startswith("+") else "+" + item["to"],
-                "msg": item["msg"],
-            })
-            url  = f"http://{self._ip}:{self._port}/cmd"
-            req  = urllib.request.Request(
-                url,
-                data    = cmd.encode("utf-8"),
-                headers = {"Content-Type": "text/plain"},
-                method  = "POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                body = resp.read().decode("utf-8").strip()
-
-            if body.startswith("OK"):
-                # The ACK is async; for now treat queued as success
-                # In a future firmware update, poll /status for SMSACK
-                return True, ""
-            return False, body
-
-        except Exception as exc:
-            return False, str(exc)
-
-    def _update_status(self, item: dict, status: str, err: str) -> None:
+    def last_status(self):
         with self._lock:
-            self._last_status = {
-                "id":        item["id"],
-                "to":        item["to"],
-                "status":    status,
-                "err":       err,
-                "queued_at": item["queued_at"],
-                "sent_at":   self._clock() if status == "sent" else None,
-            }
+            data = dict(self._statuses.get(self._last_id, dict(id=None, status='idle', err='')))
+            data.pop('msg', None)
+            data.pop('to', None)
+            return data
 
-    # ── ACK receiver (called when ESP32 responds with SMSACK:{...}) ───────
+    def _update_status(self, item, status, err=''):
+        with self._lock:
+            self._statuses[item['id']].update(status=status, err=err,
+                sent_at=self._clock() if status == 'sent' else None)
 
-    def receive_ack(self, line: str) -> None:
-        """
-        Parse an SMSACK:{...} JSON line from the ESP32 and update status.
-        Call this from whatever reads ESP32 serial/HTTP output.
-        """
+    def receive_ack(self, line):
         try:
-            if not line.startswith("SMSACK:"):
+            if not line.startswith('SMSACK:'):
                 return
             ack = json.loads(line[7:])
-            msg_id = ack.get("id", "")
-            status = "sent" if ack.get("status") == "sent" else "failed"
-            err    = ack.get("err", "")
+            if ack.get('status') not in ('queued', 'sending', 'sent', 'failed', 'unknown'):
+                return
             with self._lock:
-                if self._last_status.get("id") == msg_id:
-                    self._last_status["status"] = status
-                    self._last_status["err"]    = err
-                    if status == "sent":
-                        self._last_status["sent_at"] = self._clock()
-            log.info("sms ack id=%s status=%s err=%s", msg_id[:8], status, err)
+                item = self._statuses.get(ack.get('id'))
+                if item:
+                    item.update(status=ack['status'], err=ack.get('err', ''),
+                                sent_at=self._clock() if ack['status'] == 'sent' else None)
+        except (ValueError, TypeError):
+            return
+
+    def _request(self, path, body=None):
+        req = urllib.request.Request(self._base + path, data=body,
+                                     headers={'Content-Type': 'text/plain'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return response.read().decode('utf-8').strip()
+
+    def _do_send(self, item):
+        payload = 'SMS_JSON:' + json.dumps({k: item[k] for k in ('id', 'to', 'msg')}, separators=(',', ':'))
+        body = self._request('/cmd', payload.encode())
+        return body == 'OK:queued:' + item['id'] or body == 'OK:known:' + item['id']
+
+    def _process(self, item):
+        # Confirm protocol support before submitting. Never resend after an ambiguous
+        # transport failure or device reboot: the original SMS may have reached the modem.
+        try:
+            initial = json.loads(self._request('/sms/status?id=' + item['id']))
+            boot = initial['boot_id']
+            if initial.get('id') != item['id']:
+                raise ValueError('Uncorrelated SMS status')
         except Exception as exc:
-            log.debug("receive_ack parse error: %s — line: %r", exc, line)
+            self._update_status(item, 'failed', 'SMS status protocol unavailable: ' + str(exc))
+            return
+        for attempt in range(config.SMS_MAX_RETRIES + 1):
+            try:
+                if self._do_send(item):
+                    break
+                self._update_status(item, 'failed', 'Command rejected')
+                return
+            except urllib.error.HTTPError as exc:
+                # A full queue is a definite rejection; retrying cannot duplicate a send.
+                if exc.code not in (429, 503) or attempt == config.SMS_MAX_RETRIES:
+                    self._update_status(item, 'failed', str(exc))
+                    return
+                if self._stop.wait(config.SMS_RETRY_BACKOFF_S[min(attempt, len(config.SMS_RETRY_BACKOFF_S)-1)]):
+                    return
+            except Exception:
+                break  # ambiguous acceptance: poll the same ID, never submit again
+        deadline = time.monotonic() + 90
+        while not self._stop.is_set() and time.monotonic() < deadline:
+            try:
+                ack = json.loads(self._request('/sms/status?id=' + item['id']))
+                if ack.get('boot_id') != boot:
+                    self._update_status(item, 'unknown', 'ESP32 restarted before acknowledgement')
+                    return
+                if ack.get('id') == item['id'] and ack.get('status') in ('queued', 'sending', 'sent', 'failed', 'unknown'):
+                    self.receive_ack('SMSACK:' + json.dumps(ack))
+                    if ack['status'] in ('sent', 'failed', 'unknown'):
+                        return
+            except Exception:
+                pass
+            self._stop.wait(1)
+        self._update_status(item, 'unknown', 'Acknowledgement timeout')
+
+    def _sender_loop(self):
+        while not self._stop.is_set():
+            try:
+                item = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self._process(item)
+            finally:
+                self._queue.task_done()

@@ -123,6 +123,12 @@ class PersistenceDB:
     def _init_schema(self) -> None:
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+            columns = {row['name'] for row in conn.execute('PRAGMA table_info(tracks)')}
+            if 'reviewed' not in columns:
+                conn.execute('ALTER TABLE tracks ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 0')
+            if 'coverage_pct' not in columns:
+                conn.execute('ALTER TABLE tracks ADD COLUMN coverage_pct REAL NOT NULL DEFAULT 0')
+            conn.execute('UPDATE tracks SET reviewed=1 WHERE is_fp=1')
 
     # ── Connection helper ─────────────────────────────────────────────────
 
@@ -141,9 +147,13 @@ class PersistenceDB:
 
     # ── Scan lifecycle ────────────────────────────────────────────────────
 
-    def begin_scan(self, station: int, position: str) -> str:
+    def abort_incomplete_scans(self):
+        with self._conn() as conn:
+            conn.execute("UPDATE scans SET status='aborted', completed_at=? WHERE status='in_progress'", (time.time(),))
+
+    def begin_scan(self, station: int, position: str, scan_id=None) -> str:
         """Create a new scan row and return its scan_id (UUID)."""
-        scan_id = str(uuid.uuid4())
+        scan_id = scan_id or str(uuid.uuid4())
         now     = time.time()
         with self._conn() as conn:
             conn.execute(
@@ -169,10 +179,14 @@ class PersistenceDB:
         station:         int,
         position:        str,
         confirmed_dets:  List[List],   # each: [x1,y1,x2,y2,class,conf,...]
+        *,
+        committed_track_ids: Optional[List[str]] = None,
     ) -> List[str]:
         """
         Atomic rescan merge.  Returns list of new track_ids that were
         INSERTED (not merged) — these should trigger actuators.
+        If supplied, committed_track_ids receives the actual ID for every
+        input detection in order, only after the transaction succeeds.
 
         Algorithm:
         1. Find all current active tracks for (station, position).
@@ -186,9 +200,13 @@ class PersistenceDB:
         """
         now         = time.time()
         new_ids: List[str] = []
+        matched_ids: List[str] = []
 
         with self._conn() as conn:
             # Load existing active tracks
+            scan = conn.execute("SELECT status, station, position FROM scans WHERE id=?", (scan_id,)).fetchone()
+            if not scan or scan['status'] != 'in_progress' or scan['station'] != station or scan['position'] != position:
+                raise ValueError('Scan is not an open window for this station and position')
             rows = conn.execute(
                 "SELECT id, class, bbox FROM tracks "
                 "WHERE station=? AND position=? AND status='active'",
@@ -211,10 +229,13 @@ class PersistenceDB:
                 cls  = str(det[4])
                 conf = float(det[5])
                 bbox = [x1, y1, x2, y2]
+                coverage = float(det[8]) if len(det) > 8 else 0.0
 
                 best_ex   = None
                 best_iou  = 0.0
                 for ex in existing:
+                    if ex['id'] in matched_existing:
+                        continue
                     if ex["cls"] != cls:
                         continue
                     iou = _iou(bbox, ex["bbox"])
@@ -240,6 +261,10 @@ class PersistenceDB:
                     )
                     new_ids.append(track_id)
 
+                target_id = best_ex['id'] if best_ex else track_id
+                matched_ids.append(target_id)
+                conn.execute('UPDATE tracks SET coverage_pct=? WHERE id=?', (coverage, target_id))
+
             # Resolve unmatched existing tracks
             for ex in existing:
                 if ex["id"] not in matched_existing:
@@ -260,6 +285,8 @@ class PersistenceDB:
             scan_id[:8], station, position, len(new_ids),
             sum(1 for ex in existing if ex["id"] not in matched_existing),
         )
+        if committed_track_ids is not None:
+            committed_track_ids.extend(matched_ids)
         return new_ids
 
     # ── Track queries ─────────────────────────────────────────────────────
@@ -278,6 +305,7 @@ class PersistenceDB:
                     MAX(t.confidence) AS max_conf,
                     MAX(t.last_seen)  AS last_seen,
                     MAX(t.thumb_path) AS thumb_path
+                    , SUM(t.coverage_pct) AS coverage_pct
                 FROM tracks t
                 WHERE t.status='active' AND t.is_fp=0
                 GROUP BY t.station, t.class
@@ -311,6 +339,7 @@ class PersistenceDB:
                 "count":      row["count"],
                 "confidence": round(row["max_conf"], 3),
                 "thumb_path": row["thumb_path"],
+                "coverage_pct": row['coverage_pct'],
             })
             by_station[s]["active_threats"] += row["count"]
 
@@ -374,12 +403,26 @@ class PersistenceDB:
             ).fetchall()
 
         return {
-            "items":     [dict(r) for r in rows],
+            "items":     [self._public_track(dict(r)) for r in rows],
             "total":     total,
             "page":      page,
             "page_size": page_size,
             "pages":     max(1, -(-total // page_size)),
         }
+
+    @staticmethod
+    def _public_track(row):
+        for key in ('snapshot_path', 'thumb_path'):
+            if row.get(key):
+                try:
+                    row[key] = Path(row[key]).resolve().relative_to(Path(config.SNAPSHOT_DIR).resolve()).as_posix()
+                except ValueError:
+                    row[key] = None
+        return row
+
+    def mark_reviewed(self, track_id):
+        with self._conn() as conn:
+            return conn.execute('UPDATE tracks SET reviewed=1 WHERE id=? AND is_fp=0', (track_id,)).rowcount > 0
 
     def get_track(self, track_id: str) -> Optional[Dict[str, Any]]:
         with self._conn() as conn:
@@ -391,7 +434,7 @@ class PersistenceDB:
     def mark_false_positive(self, track_id: str) -> bool:
         with self._conn() as conn:
             cur = conn.execute(
-                "UPDATE tracks SET is_fp=1, status='resolved', resolved_at=? WHERE id=?",
+                "UPDATE tracks SET is_fp=1, reviewed=1, status='resolved', resolved_at=? WHERE id=?",
                 (time.time(), track_id)
             )
         return cur.rowcount > 0
@@ -401,7 +444,7 @@ class PersistenceDB:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT class, is_fp, COUNT(*) as n FROM tracks "
-                "WHERE status IN ('active','resolved') "
+                "WHERE reviewed=1 AND status IN ('active','resolved') "
                 "GROUP BY class, is_fp"
             ).fetchall()
         totals: Dict[str, List[int]] = {}
@@ -440,9 +483,20 @@ class CooldownManager:
         self._db = db
 
     def can_fire(self, key: str, cooldown_s: float, now: float = None) -> bool:
-        now = now or time.time()
+        now = time.time() if now is None else now
         last = self._last_fired(key)
-        return (now - last) >= cooldown_s
+        return last == 0 or (now - last) >= cooldown_s
+
+    def claim(self, key: str, cooldown_s: float, now=None) -> bool:
+        """Atomically reserve a cooldown across competing request/worker threads."""
+        now = time.time() if now is None else now
+        with self._db._conn() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT last_fired FROM cooldowns WHERE key=?', (key,)).fetchone()
+            if row and now - row['last_fired'] < cooldown_s:
+                return False
+            conn.execute('INSERT INTO cooldowns(key,last_fired) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET last_fired=excluded.last_fired', (key, now))
+        return True
 
     def record_fire(self, key: str, now: float = None) -> None:
         now = now or time.time()

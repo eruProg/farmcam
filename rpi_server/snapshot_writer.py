@@ -52,9 +52,11 @@ class SnapshotWriter:
         self._thread: Optional[threading.Thread] = None
         self._prune_thread: Optional[threading.Thread] = None
         self._running     = False
+        self._stop_event = threading.Event()
         config.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
     def start(self) -> None:
+        self._stop_event.clear()
         self._running = True
         self._thread  = threading.Thread(
             target=self._worker, daemon=True, name="snapshot_writer"
@@ -67,8 +69,11 @@ class SnapshotWriter:
 
     def stop(self) -> None:
         self._running = False
+        self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=5.0)
+        if self._prune_thread:
+            self._prune_thread.join(timeout=5.0)
 
     def submit(
         self,
@@ -95,7 +100,7 @@ class SnapshotWriter:
     # ── Worker ────────────────────────────────────────────────────────────
 
     def _worker(self) -> None:
-        while self._running:
+        while self._running or not self._queue.empty():
             try:
                 item = self._queue.get(timeout=1.0)
             except queue.Empty:
@@ -112,7 +117,7 @@ class SnapshotWriter:
         meta       = item["frame_meta"]
         ts         = int(item["ts"])
 
-        dest_dir = config.SNAPSHOT_DIR / track_id[:8]
+        dest_dir = config.SNAPSHOT_DIR / track_id
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         # Annotate the full frame
@@ -135,8 +140,8 @@ class SnapshotWriter:
         cv2.putText(annotated, wm, (8, annotated.shape[0] - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
-        full_path  = dest_dir / f"{ts}_full.jpg"
-        thumb_path = dest_dir / f"{ts}_thumb.jpg"
+        full_path  = dest_dir / "latest_full.jpg"
+        thumb_path = dest_dir / "latest_thumb.jpg"
 
         # Atomic write: write to tmp then rename
         self._atomic_write(annotated, full_path, quality=85)
@@ -159,7 +164,8 @@ class SnapshotWriter:
     @staticmethod
     def _atomic_write(img: np.ndarray, path: Path, quality: int = 85) -> None:
         tmp = path.with_suffix(".tmp.jpg")
-        cv2.imwrite(str(tmp), img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if not cv2.imwrite(str(tmp), img, [cv2.IMWRITE_JPEG_QUALITY, quality]):
+            raise OSError(f'Could not write snapshot: {path}')
         os.replace(str(tmp), str(path))   # atomic on POSIX
 
     # ── Pruner ────────────────────────────────────────────────────────────
@@ -167,7 +173,8 @@ class SnapshotWriter:
     def _prune_loop(self) -> None:
         """Run every hour."""
         while self._running:
-            time.sleep(3600)
+            if self._stop_event.wait(3600):
+                break
             try:
                 self._prune()
             except Exception as exc:
@@ -184,6 +191,7 @@ class SnapshotWriter:
                 rows = self._db.get_tracks_page(status="active", page_size=9999)
                 for row in rows["items"]:
                     protected_prefixes.add(row["id"][:8])
+                    protected_prefixes.add(row['id'])
             except Exception:
                 pass
 
@@ -202,7 +210,7 @@ class SnapshotWriter:
         for mtime, jpg in all_files:
             if mtime < cutoff_age:
                 _safe_remove(jpg)
-                _safe_remove(jpg.with_name(jpg.stem + "_thumb.jpg"))
+                _safe_remove(jpg.with_name(jpg.name.replace('_full.jpg', '_thumb.jpg')))
 
         # Delete by size
         total = _dir_size(config.SNAPSHOT_DIR)
@@ -211,7 +219,7 @@ class SnapshotWriter:
                 break
             sz = jpg.stat().st_size if jpg.exists() else 0
             if _safe_remove(jpg):
-                _safe_remove(jpg.with_name(jpg.stem + "_thumb.jpg"))
+                _safe_remove(jpg.with_name(jpg.name.replace('_full.jpg', '_thumb.jpg')))
                 total -= sz
 
         log.info("snapshot prune done: %.1f MB remain",

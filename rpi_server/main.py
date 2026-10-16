@@ -38,6 +38,8 @@ import uvicorn
 
 # New subsystem coordinator (non-frozen; wires after startup)
 import coordinator
+import config
+import sys
 
 # ---------------------------------------------------------------------------
 # Optional hardware imports
@@ -172,7 +174,7 @@ except Exception as e:
 # Configuration
 # ---------------------------------------------------------------------------
 SERVER_PORT = 8000
-SERVER_BUILD = "2026-09-26-small-targets-2"
+SERVER_BUILD = "2026-10-16-farmcam-complete-1"
 VIEWER_PORT = 8080
 BUZZER_PIN = 17
 PUMP_PIN = 27
@@ -180,12 +182,12 @@ PUMP_DURATION = 3.0
 
 ESP32_IP = os.environ.get("FARMCAM_ESP32_IP", "10.244.166.161")
 ESP32_PORT = 80
-FARMER_PHONE = "639916425163"    # farmer handset, no + (SIM800L)
-SIM800L_PHONE = "639693141995"   # SIM inside SIM800L (sender)
+FARMER_PHONE = config.FARMER_PHONE
+SIM800L_PHONE = config.SIM_PHONE
 
 PEST_HIGH_THRESHOLD = 3
 PEST_MED_THRESHOLD = 1
-FUNGUS_HIGH_COV_PCT = 20.0
+FUNGUS_HIGH_COV_PCT = config.SEV_FUNGUS_HIGH_PCT
 FUNGUS_MED_COV_PCT = 5.0
 
 PUMP_HIGH_SECS = 2.5
@@ -195,7 +197,7 @@ PUMP_CYCLE_ON_SECS = 2.5
 SPRAY_MIN_HITS = 2
 PUMP_CYCLE_COUNT = 1
 PUMP_CYCLE_GAP_SECS = 2.0
-PUMP_COOLDOWN = 10  # seconds after buzz+pump+sms
+PUMP_COOLDOWN = config.PUMP_COOLDOWN_S
 
 # Station cycle: 30s detect → 5s pause → 30s detect → 10s move
 # After lettuce 4: 15s then back to lettuce 1
@@ -205,7 +207,7 @@ MOVE_SECS = 10.0
 LOOP_AFTER_4_SECS = 15.0
 
 LAST_PUMP_FILE = str(SCRIPT_DIR / "last_pump_time.txt")
-SMS_COOLDOWN_SECS = 10
+SMS_COOLDOWN_SECS = config.SMS_COOLDOWN_S
 
 # Dual model class names
 SEG_CLASS_NAMES = ["fungus"]
@@ -326,6 +328,7 @@ buzzer_muted = False
 arduino_serial = None
 start_time = time.time()
 latest_detections = []
+display_detections = []
 recent_events = deque(maxlen=50)
 pt_model = None
 
@@ -1627,17 +1630,22 @@ def init_camera():
             "and close the other camera process before starting one FarmCam instance."
         ) from e
 
+current_frame_meta = None
+
 def capture_frames():
-    global current_frame, frame_sequence, frame_timestamp
+    global current_frame, frame_sequence, frame_timestamp, current_frame_meta
     while not stop_event.is_set():
         if camera and HAS_CAMERA:
             try:
                 # Picamera2 RGB888 arrays already have OpenCV's B,G,R byte order.
+                capture_started = time.monotonic()
+                meta = coordinator.capture_meta(frame_sequence + 1, capture_started)
                 frame_bgr = camera.capture_array("lores")
                 with frame_lock:
                     current_frame = frame_bgr
                     frame_sequence += 1
-                    frame_timestamp = time.monotonic()
+                    frame_timestamp = capture_started
+                    current_frame_meta = meta
             except Exception as e:
                 _infer_debug["last_err"] = f"Camera capture: {e}"
                 with frame_lock:
@@ -1660,7 +1668,7 @@ def generate_mjpeg():
             # scratch. Now a bad frame just gets skipped instead of taking
             # the whole stream down.
             try:
-                for item in list(latest_detections):
+                for item in list(display_detections):
                     try:
                         x1, y1, x2, y2, label, color = item[:6]
                         poly = item[6] if len(item) > 6 else None
@@ -1718,7 +1726,7 @@ def generate_mjpeg():
                         continue
                 hud = (
                     f"NPU C:{int(comb_model_loaded)} S:{int(seg_model_loaded)} D:{int(det_model_loaded)} "
-                    f"objs:{len(latest_detections)} max:{_infer_debug.get('max_score', 0):.2f} "
+                    f"objs:{len(display_detections)} max:{_infer_debug.get('max_score', 0):.2f} "
                     f"{current_state} S{active_station_id}"
                 )
                 cv2.rectangle(frame, (8, 8), (8 + 12 * len(hud), 36), (0, 0, 0), -1)
@@ -1856,7 +1864,7 @@ def _advance_station():
 
 def detect_loop():
     global active_station_id, cycle_index, current_state, state_start_time
-    global _dwell_hits_peak, _dwell_sightings
+    global _dwell_hits_peak, _dwell_sightings, display_detections
     print("🔍 Detection loop started")
     print("   Cycle: 30s detect → 5s pause → 30s detect → 10s move "
           "(15s after lettuce 4)")
@@ -1867,79 +1875,29 @@ def detect_loop():
     _reset_window_best()
     while not stop_event.is_set():
         try:
-            elapsed = time.time() - state_start_time
-
-            if current_state == "DETECT_A" and elapsed >= DETECT_WINDOW_SECS:
-                print(f"⏸  Lettuce {active_station_id}: 5s pause (no new inference)")
-                current_state = "PAUSE_5"
-                state_start_time = time.time()
-            elif current_state == "PAUSE_5" and elapsed >= PAUSE_SECS:
-                if HAILO_MODE.lower() == "rotate":
-                    print("♻️  Switching HEF → SEG (fungus) for pass 2")
-                    hailo_load_labels(["SEG"]) or hailo_load_labels(["COMB"])
-                print(f"🔍 Lettuce {active_station_id}: second 30s detect pass")
-                current_state = "DETECT_B"
-                state_start_time = time.time()
-            elif current_state == "DETECT_B" and elapsed >= DETECT_WINDOW_SECS:
-                snap = dict(window_best)
-                sid = active_station_id
-                # BUG FIX: window_best never carried a "hits" key, so this
-                # end-of-visit call always saw hits=0 and silently skipped
-                # spraying no matter how severe the visit looked on the
-                # dashboard. Feed it the real peak/cumulative counts we
-                # tracked across the whole 30+30s dwell.
-                snap["hits"] = _dwell_hits_peak
-                snap["dwell_sightings"] = _dwell_sightings
-                # write final window result to dashboard BEFORE moving
-                _publish_station(sid, snap)
-                threading.Thread(
-                    target=apply_severity_actions, args=(sid, snap), daemon=True
-                ).start()
-                move_secs = _advance_station()
-            elif current_state == "MOVING" and elapsed >= move_secs:
-                if HAILO_MODE.lower() == "rotate":
-                    nxt = "COMB" if active_station_id % 2 == 0 else "DET"
-                    print(f"♻️  Switching HEF → {nxt} for lettuce {active_station_id}")
-                    try:
-                        hailo_load_labels([nxt]) or hailo_load_labels(["DET"]) or hailo_load_labels(["COMB"])
-                    except Exception as e:
-                        print(f"⚠ HEF switch skipped: {e}")
-                current_state = "DETECT_A"
-                state_start_time = time.time()
-                _reset_window_best()
-                print(f"🔍 Detecting at lettuce {active_station_id} (30s pass 1)")
-            elif current_state == "DETECTING":
-                current_state = "DETECT_A"
-
-            infer_now = current_state in ("DETECT_A", "DETECT_B", "DETECTING")
+            coordinator.tick()
 
             with frame_lock:
                 frame = current_frame.copy() if current_frame is not None else None
                 sequence = frame_sequence
+                meta = current_frame_meta
                 frame_age = time.monotonic() - frame_timestamp
             if frame is None or sequence == last_frame_sequence or frame_age > 2.0:
                 time.sleep(0.1)
                 continue
 
-            if not infer_now:
+            if not coordinator.accepts(meta):
                 time.sleep(DETECTION_INTERVAL)
                 continue
 
             last_frame_sequence = sequence
 
-            # ── coordinator tick (state machine + frame isolation) ──
-            # This runs BEFORE detect_frame (frozen) so the machine drives
-            # the gating logic; the result of handle_frame replaces raw dets.
-            coordinator.tick()
-            if _scan_sm := getattr(coordinator, '_scan_sm', None):
-                if not _scan_sm.is_detecting:
-                    time.sleep(DETECTION_INTERVAL)
-                    continue
-
             dets = detect_frame(frame)
-
-            # ── post-inference: verifier, persistence, buzzer, snapshots ──
-            dets = coordinator.handle_frame(frame, dets, sequence)
+            dets = coordinator.handle_frame(frame, dets, meta)
+            if dets is None:
+                display_detections = []
+                continue
+            display_detections = coordinator.overlay(dets)
 
             pest_count = 0
             fungus_cov = 0.0
@@ -1986,19 +1944,9 @@ def detect_loop():
             pest_severity, fungus_severity, desc = compute_severity_info(pest_count, fungus_cov, list(pest_types))
             _note_window(pest_severity, fungus_severity, desc, pest_count, fungus_cov, pest_types, conf=frame_conf)
 
-            # Sticky dashboard: an empty frame must not wipe a hit in this window
-            pub = window_best if (window_best.get("pest_severity", "none") != "none"
-                                   or window_best.get("fungus_severity", "none") != "none") else {
-                "pest_severity": pest_severity, "fungus_severity": fungus_severity,
-                "severity": _worse_severity(pest_severity, fungus_severity), "desc": desc,
-                "pest": pest_count, "fungus": fungus_cov, "types": list(pest_types), "confidence": frame_conf,
-            }
-            _publish_station(active_station_id, pub, extra={
-                "whitefly_count": wf,
-                "worm_count": worms,
-                "detections": frame_dets[:12],
-                "confidence": max([d["conf"] for d in frame_dets], default=0.0),
-            })
+            # Completed-window summaries remain authoritative until the rescan commits.
+            # Live results are exposed separately and never clear persisted station state.
+            stations_data[meta.station]['live_detections'] = frame_dets[:12]
 
             # Spray immediately once 2 pest/fungus boxes are in this frame,
             # OR the moment EITHER track independently reads "high" (e.g. a
@@ -2006,10 +1954,12 @@ def detect_loop():
             # even if it didn't literally land 2 boxes in this exact frame.
             now = time.time()
             last_fire = float(_live_alerted.get(f"t{active_station_id}", 0) or 0)
-            if (total_hits >= SPRAY_MIN_HITS or pest_severity == "high" or fungus_severity == "high") \
+            if (total_hits >= SPRAY_MIN_HITS or pest_severity == "high" or fungus_severity == "high"
+                    or (_worse_severity(pest_severity, fungus_severity) == "medium" and _dwell_sightings >= SPRAY_MIN_HITS * 3)) \
                     and (now - last_fire) >= PUMP_COOLDOWN:
                 _live_alerted[f"t{active_station_id}"] = now
                 snap = dict(window_best)
+                snap['_scan_id'] = meta.scan_id
                 snap["hits"] = max(total_hits, _dwell_hits_peak)
                 snap["dwell_sightings"] = _dwell_sightings
                 snap["pest"] = max(int(snap.get("pest", 0) or 0), pest_count)
@@ -2131,6 +2081,8 @@ def _probe_esp32():
 
 
 def send_sms_alert(alert_type, station, message, force=False):
+    if "coordinator" in globals() and coordinator.get_shared_state().get("sms_broker"):
+        return coordinator.send_sms(alert_type, station, message)
     print(f"📱 SMS [{alert_type}] Lettuce {station}: {message}")
     now = time.time()
     with sms_lock:
@@ -2251,36 +2203,17 @@ def apply_severity_actions(station, summary):
               f"pest={pest_sev}, fungus={fungus_sev}) — no spray")
         return
 
-    prior_sev = _sprayed_this_visit.get(station)
-    if prior_sev is not None and _SEV_ORDER.get(sev, 0) <= _SEV_ORDER.get(prior_sev, 0):
-        print(f"💧 Already sprayed lettuce {station} this visit at {prior_sev.upper()} "
-              f"(now {sev.upper()}, not worse) — no extra pesticide")
-        return
-    now = time.time()
-    if now - _last_actuation.get(station, 0) < PUMP_COOLDOWN:
-        print(f"⏳ Actuation cooldown {PUMP_COOLDOWN}s on lettuce {station} — skip")
-        return
-    _last_actuation[station] = now
-    _sprayed_this_visit[station] = sev
+    with manual_control_lock:
+        if not coordinator.automatic_ready(station, summary.get('_scan_id')):
+            return
+        if manual_pump_on or pump_active:
+            return
+        cm = coordinator.get_shared_state().get('cooldown_mgr')
+        if cm is None or not cm.claim('pump', config.PUMP_COOLDOWN_S):
+            return
+        # A single worker owns the automatic cycle. Manual control cannot race it.
+        _pump_worker(config.PUMP_DURATION_S, station, sev.upper(), True)
 
-    # Any 1+ pest or fungus: pump 2.5s, then buzz (only with pump), then SMS.
-    # Buzzer choice checks each track on its own — a fungus-only reading
-    # that reaches HIGH now correctly gets the critical tone too, instead
-    # of only pest being able to trigger it.
-    buzz = "BUZZ_CRITICAL" if (pest_sev == "high" or fungus_sev == "high") else (
-        "BUZZ_FUNGUS" if has_fungus and not has_pest else "BUZZ_ALERT"
-    )
-    print(f"💧 Buzz only with pump — pest={pest_sev} fungus={fungus_sev} lettuce {station}")
-    # send_sms_after=True inside _pump_worker will send pump confirmation SMS
-    threading.Thread(
-        target=_pump_worker, args=(2.5, station, sev.upper(), True), daemon=True
-    ).start()
-    time.sleep(0.2)
-    esp32_cmd_async("BUZZ_SPRAY")  # 2.5s beep with the pump only
-    # Send the severity/detection SMS separately
-    threading.Thread(
-        target=send_sms_alert, args=(sev.upper(), station, desc), daemon=True
-    ).start()
 
 # ---------------------------------------------------------------------------
 # WiFi helper (simplified)
@@ -2355,7 +2288,10 @@ async def api_system():
         "inference_frames": _infer_debug["frames"],
         "uptime": f"{uptime//3600}h {(uptime%3600)//60}m",
         "active_station": active_station_id,
-        "buzzer_muted": buzzer_muted,
+        "buzzer_muted": (coordinator.get_shared_state()["buzzer_scheduler"].is_muted
+                         if coordinator.get_shared_state()["buzzer_scheduler"] else True),
+        "scan_state": coordinator.scan_state(),
+        "subsystem_fault": coordinator.get_shared_state()["fault"],
         "stations": list(stations_data.values()),
         "state": current_state,
         "profile": active_profile,
@@ -2485,7 +2421,7 @@ def _station_payload(sid):
         "active": is_active,
         "whitefly_count": sd.get("whitefly_count", 0),
         "worm_count": sd.get("worm_count", 0),
-        "live_detections": sd.get("detections", []),
+        "live_detections": sd.get("live_detections", []),
         "detections": hist,
         "history": hist,
         "detection_history": hist,
@@ -2548,7 +2484,6 @@ async def api_dashboard():
     }
 
 
-@app.get("/api/logs")
 @app.get("/api/detections")
 @app.get("/api/history")
 async def api_logs(lettuce_id: int = Query(None), station: int = Query(None), id: int = Query(None)):
@@ -2895,12 +2830,12 @@ def acquire_instance_lock():
 
 
 def cleanup():
-    coordinator.shutdown()   # graceful teardown of new subsystems
     print("\n🛑 Shutting down FarmCam...")
     global camera, instance_lock_file
     stop_event.set()
     for worker in worker_threads:
         worker.join(timeout=3.0)
+    coordinator.shutdown()
     with hailo_swap_lock:
         hailo_release_device()
     if camera is not None:
@@ -2919,6 +2854,42 @@ def cleanup():
         instance_lock_file.close()
         instance_lock_file = None
 
+def scan_phase_changed(phase, station):
+    from scan_state import ScanPhase
+    global _dwell_hits_peak, _dwell_sightings
+    if phase is ScanPhase.DETECT_UPPER:
+        _reset_window_best()
+        _dwell_hits_peak = _dwell_sightings = 0
+        _sprayed_this_visit.pop(station, None)
+    if phase in (ScanPhase.DETECT_UPPER, ScanPhase.DETECT_LOWER):
+        temporal.buffer.clear()
+        if HAILO_MODE.lower() == 'rotate':
+            label = 'SEG' if phase is ScanPhase.DETECT_LOWER else ('COMB' if station % 2 == 0 else 'DET')
+            hailo_load_labels([label]) or hailo_load_labels(['COMB'])
+
+
+def restore_station_summaries(rows):
+    for row in rows:
+        sid = row['station_id']
+        if row['last_scanned'] is None:
+            continue
+        pests = sum(d['count'] for d in row['detections'] if d['class'] != 'fungus')
+        fungus = min(100.0, sum(d.get('coverage_pct', 0) for d in row['detections'] if d['class'] == 'fungus'))
+        pest_sev = 'high' if pests >= config.SEV_PEST_HIGH else ('medium' if pests else 'none')
+        fungus_sev = 'high' if fungus >= config.SEV_FUNGUS_HIGH_PCT else ('medium' if fungus else 'none')
+        _publish_station(sid, dict(pest_severity=pest_sev, fungus_severity=fungus_sev,
+            severity=_worse_severity(pest_sev, fungus_sev), pest=pests, fungus=fungus,
+            types=[d['class'] for d in row['detections']], desc='Confirmed detections' if pests or fungus else 'Clear',
+            confidence=max((d['confidence'] for d in row['detections']), default=0)),
+            extra={'persisted': True, 'last_scanned': row['last_scanned'],
+                   'last_check': datetime.fromtimestamp(row['last_scanned']).isoformat(),
+                   'whitefly_count': sum(d['count'] for d in row['detections'] if d['class'] in ('whitefly','whiteflies')),
+                   'worm_count': sum(d['count'] for d in row['detections'] if d['class'] == 'worm')})
+
+
+from api_extensions import register_extensions
+register_extensions(app, coordinator.get_shared_state)
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
@@ -2936,10 +2907,9 @@ def startup():
         raise RuntimeError("No Hailo models loaded; detection cannot start. "
                            "Error 74 means no free Hailo device. Check other FarmCam/Hailo "
                            "processes and run hailortcli scan before restarting.")
-    init_buzzer()
     init_pump()
     init_db()
-    coordinator.wire(app)   # initialise new subsystems + register API extensions
+    coordinator.wire(sys.modules[__name__])
 
     cam_thread = threading.Thread(target=capture_frames, daemon=True)
     worker_threads.append(cam_thread)

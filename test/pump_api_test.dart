@@ -10,8 +10,10 @@ void main() {
   final api = ApiService(state);
 
   Future<PumpCommandResult> hold(int status, Map<String, dynamic> body) =>
-      http.runWithClient(() => api.pumpHold(),
-          () => MockClient((_) async => http.Response(jsonEncode(body), status)));
+      http.runWithClient(
+          () => api.pumpHold(),
+          () =>
+              MockClient((_) async => http.Response(jsonEncode(body), status)));
 
   test('HTTP 200 with failed device acknowledgement is not success', () async {
     expect((await hold(200, {'ok': false, 'active': true})).ok, isFalse);
@@ -26,13 +28,17 @@ void main() {
     expect(result.error, 'ESP32 unreachable');
   });
   test('idle heartbeat stops being treated as a live pump', () async {
-    final result = await http.runWithClient(() => api.pumpHeartbeat(),
-        () => MockClient((_) async => http.Response('{"ok":true,"active":false}', 200)));
+    final result = await http.runWithClient(
+        () => api.pumpHeartbeat(),
+        () => MockClient(
+            (_) async => http.Response('{"ok":true,"active":false}', 200)));
     expect(result.ok, isFalse);
   });
   test('confirmed release succeeds with active false', () async {
-    final result = await http.runWithClient(() => api.pumpRelease(),
-        () => MockClient((_) async => http.Response('{"ok":true,"active":false}', 200)));
+    final result = await http.runWithClient(
+        () => api.pumpRelease(),
+        () => MockClient(
+            (_) async => http.Response('{"ok":true,"active":false}', 200)));
     expect(result.ok, isTrue);
   });
 }

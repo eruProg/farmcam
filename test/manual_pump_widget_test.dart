@@ -7,9 +7,10 @@ import 'package:farmcam/screens/dashboard_screen.dart';
 
 void main() {
   for (final releaseBeforeReply in [false, true]) {
-    testWidgets(releaseBeforeReply
-        ? 'release during pending start sends stop after acknowledgement'
-        : 'holding confirms spray and release sends stop', (tester) async {
+    testWidgets(
+        releaseBeforeReply
+            ? 'release during pending start sends stop after acknowledgement'
+            : 'holding confirms spray and release sends stop', (tester) async {
       tester.view.physicalSize = const Size(400, 1000);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -49,17 +50,19 @@ void main() {
         expect(find.text('SPRAYING — Release to Stop'), findsNothing);
         await tester.pumpWidget(const SizedBox());
         await tester.pump(const Duration(seconds: 3));
-      }, () => MockClient((request) async {
-        final path = request.url.path;
-        if (request.method == 'POST' && path.startsWith('/api/pump/')) {
-          final action = path.split('/').last;
-          commands.add(action);
-          if (action == 'hold') return hold.future;
-          return http.Response('{"ok":true,"active":${action == 'heartbeat'}}', 200);
-        }
-        if (path == '/api/lettuce') return http.Response('[]', 200);
-        return http.Response('{}', 200);
-      }));
+      },
+          () => MockClient((request) async {
+                final path = request.url.path;
+                if (request.method == 'POST' && path.startsWith('/api/pump/')) {
+                  final action = path.split('/').last;
+                  commands.add(action);
+                  if (action == 'hold') return hold.future;
+                  return http.Response(
+                      '{"ok":true,"active":${action == 'heartbeat'}}', 200);
+                }
+                if (path == '/api/lettuce') return http.Response('[]', 200);
+                return http.Response('{}', 200);
+              }));
     });
   }
 }

@@ -10,7 +10,7 @@ from repair_service import is_same_farmcam, source_build, unit_quote, service_ov
 
 class RepairServiceTests(unittest.TestCase):
     def test_updated_source_has_build_and_real_app_route(self):
-        self.assertEqual(source_build(Path(__file__).with_name("main.py")), "2026-09-26-small-targets-2")
+        self.assertEqual(source_build(Path(__file__).with_name("main.py")), "2026-10-16-farmcam-complete-1")
 
     def test_comment_with_route_does_not_pass_validation(self):
         with tempfile.TemporaryDirectory() as folder:

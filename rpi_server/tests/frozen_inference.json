@@ -1,0 +1,15 @@
+{
+  "_sigmoid": "7d95813bd97ac9cb6e553f05497535c743395111dde29b5a236b77c51540f1b8",
+  "_softmax": "ef6229015b88a7672aba7401e13e37e5f4994906b22b89720e21b3e68460c90d",
+  "_dfl_decode": "6f51fe5cf907aca62a92cb8fea80228d1b5fdf87f8acc7ddefb0d255bc3aca02",
+  "nms": "734f0edc587e70f8b6eb0cb4417e6c81eb90f85292199dc4f3ed5cf9c9cc74fa",
+  "_decode_nms_tensor": "2d90f81058eeef0b278c0e0f14cfc3c55d29a05a80572a04267dba5b4c08f53a",
+  "_valid_box": "be4a7904b9710e46b22b75d4381294bbd0d345c44dcdde4954f877da89873372",
+  "_decode_hailo_nms": "f6a558187892f503dc33e293a0e148d8a276b4c986a4dcb1bfa3cf49f46323d4",
+  "_as_hwc": "f337fcf69c9f4fb66acb14fd975b1bd6aa5a0ab23de2ab9b136a6e713ced12e9",
+  "_maybe_sigmoid": "3b89c1feaeee9b6fa33686a6bad861806617dff192051b12f84f35a8437e9d34",
+  "postprocess_yolov8": "8406054a907ea54e29331973efbd96f86ff1086838a9be13acfa834e168b344e",
+  "_mask_to_polygon_and_area": "32772902f3580786afdf63edd2a9967202b07886b90633f9bac662cd2cb2ccc4",
+  "run_inference_on_network": "2f62c422d728588c4cd0eca8eb9ba0897c8a7be26e25a611b37d462bf7c8c9a0",
+  "detect_frame": "f78d893dd092a89efba9f82dbebdde0258751bd346cc8bfb396209144c9fb122"
+}
