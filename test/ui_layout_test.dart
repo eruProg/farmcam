@@ -87,6 +87,7 @@ void main() {
                         return http.Response(
                             '{"items":[],"total":0,"pages":1}', 200);
                       case '/api/scan/state':
+                      case '/api/system':
                         return http.Response('{"detail":"Offline"}', 503);
                       case '/api/sms/test':
                         return http.Response(

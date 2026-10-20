@@ -59,6 +59,34 @@ def register_extensions(
         - current_state: str   (legacy global fallback)
     """
 
+    @app.get('/api/scan/settings')
+    def scan_settings():
+        import coordinator
+        try:
+            return coordinator.timing_settings()
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc))
+
+    @app.post('/api/scan/start')
+    def scan_start(body: dict):
+        import coordinator
+        try:
+            return coordinator.start_scan(body)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        except OSError:
+            raise HTTPException(503, 'Could not save timings; scan was not started')
+
+    @app.post('/api/scan/stop')
+    def scan_stop():
+        import coordinator
+        try:
+            return coordinator.stop_scan()
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc))
+
     # ── Scan state ────────────────────────────────────────────────
 
     @app.get("/api/scan/state")
@@ -68,6 +96,8 @@ def register_extensions(
         Also patches the /api/system response when `scan_state` key is absent.
         """
         state = get_state()
+        if state.get('scan_state') is not None:
+            return state['scan_state']
         sm = state.get("scan_sm")
         if sm is not None:
             return sm.state_dict()
@@ -188,19 +218,24 @@ def register_extensions(
     @app.get("/api/config")
     async def api_config():
         """Returns all non-secret config constants for the Flutter About screen."""
+        from scan_settings import ScanSettings
+        sm = get_state().get('scan_sm')
+        timing = sm.settings if sm else ScanSettings()
+        cycle = (8 * timing.scan_s + 2 * (timing.raise_s + timing.lower_s)
+                 + timing.travel_1_2_s + timing.travel_2_3_s + timing.travel_3_4_s
+                 + timing.return_s) if timing.return_s is not None else None
         return {
             # Timing
-            "detect_window_secs":  config.DETECT_WINDOW_SECS,
-            "transit_down_secs":   config.TRANSIT_DOWN_SECS,
-            "transit_up_secs":     config.TRANSIT_UP_SECS,
-            "move_secs":           config.MOVE_SECS,
-            "loop_after_4_secs":   config.LOOP_AFTER_4_SECS,
-            "settle_secs":         config.SETTLE_SECS,
-            "cycle_time_secs":     4 * (config.DETECT_WINDOW_SECS * 2
-                                        + config.TRANSIT_DOWN_SECS
-                                        + config.TRANSIT_UP_SECS + 2 * config.SETTLE_SECS)
-                                   + 3 * config.MOVE_SECS
-                                   + config.LOOP_AFTER_4_SECS,
+            "detect_window_secs": timing.scan_s,
+            "transit_down_secs": timing.lower_s,
+            "transit_up_secs": timing.raise_s,
+            "move_secs": timing.travel_1_2_s,
+            "travel_2_3_s": timing.travel_2_3_s,
+            "travel_3_4_s": timing.travel_3_4_s,
+            "loop_after_4_secs": timing.return_s,
+            "initial_delay_s": timing.initial_delay_s,
+            "settle_secs": 0,
+            "cycle_time_secs": cycle,
             # Thresholds
             "per_class_thresholds": config.PER_CLASS_THRESHOLDS,
             "confidence_threshold": config.CONFIDENCE_THRESHOLD,

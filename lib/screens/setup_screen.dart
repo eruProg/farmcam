@@ -1,3 +1,4 @@
+import '../widgets/scan_timing_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -105,6 +106,24 @@ class _SetupScreenState extends State<SetupScreen> {
     );
   }
 
+  void _openScanTiming() {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => Scaffold(
+        backgroundColor: _bg,
+        appBar: AppBar(
+          title: const Text('Scan Timing'),
+          backgroundColor: _bg,
+        ),
+        body: const SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.all(20),
+            child: ScanTimingCard(),
+          ),
+        ),
+      ),
+    ));
+  }
+
   void _showSetupGuide() {
     showDialog(
       context: context,
@@ -169,8 +188,7 @@ class _SetupScreenState extends State<SetupScreen> {
                       decoration: BoxDecoration(
                         color: _greenBg,
                         borderRadius: BorderRadius.circular(16),
-                        border:
-                            Border.all(color: _green.withValues(alpha: 0.3)),
+                        border: Border.all(color: _green.withOpacity(0.3)),
                       ),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(15),
@@ -213,6 +231,14 @@ class _SetupScreenState extends State<SetupScreen> {
                     subtitle: 'Set up your phone hotspot for the RPi5.',
                     accent: _green,
                     onTap: _showSetupGuide),
+                const SizedBox(height: 10),
+                _ActionCard(
+                    icon: Icons.timer_outlined,
+                    title: 'Scan Timing',
+                    subtitle:
+                        'Adjust scan and movement times before connecting.',
+                    accent: _green,
+                    onTap: _openScanTiming),
                 const SizedBox(height: 32),
                 Center(
                     child: TextButton(
@@ -261,6 +287,12 @@ class _SetupScreenState extends State<SetupScreen> {
                     keyboardType: TextInputType.number,
                     inputFormatters: [FilteringTextInputFormatter.digitsOnly]),
                 const SizedBox(height: 20),
+                TextButton.icon(
+                  onPressed: _openScanTiming,
+                  icon: const Icon(Icons.timer_outlined),
+                  label: const Text('Scan Timing'),
+                  style: TextButton.styleFrom(foregroundColor: _green),
+                ),
                 if (_status.isNotEmpty) ...[
                   Row(children: [
                     const SizedBox(
@@ -280,7 +312,7 @@ class _SetupScreenState extends State<SetupScreen> {
                     decoration: BoxDecoration(
                         color: _redBg,
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: _red.withValues(alpha: 0.3))),
+                        border: Border.all(color: _red.withOpacity(0.3))),
                     child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -364,7 +396,7 @@ class _ActionCard extends StatelessWidget {
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                  color: accent.withValues(alpha: 0.1),
+                  color: accent.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(10)),
               child: Icon(icon, size: 20, color: accent)),
           const SizedBox(width: 14),

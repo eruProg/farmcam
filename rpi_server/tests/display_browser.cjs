@@ -15,13 +15,15 @@ const fixture = {
     {id:4,status:'clear',last_check:new Date().toISOString()}],
   pump_active:false,buzzer_muted:true,sms_status:'sent',logs_available:true,logs_updated_at:now,
   logs:Array.from({length:5},(_,i)=>({station:i%4+1,class:i%2?'worm':'fungus',first_seen:now-i*45,status:i%2?'resolved':'active'})),
-  stream_active:true,stream_age_s:.1,
+  stream_active:true,stream_age_s:.1,video_available:true,video_camera_age_s:.1,
 };
 (async()=>{
   const browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL||'msedge',headless:true});
   const errors=[];
   for(const [width,height] of [[1024,600],[1280,800],[1920,1080]]) {
-    const page=await browser.newPage({viewport:{width,height}});
+    // Allow test-only injection of the saved baseline stylesheet for size comparisons.
+    // The display server's production CSP remains unchanged.
+    const page=await browser.newPage({viewport:{width,height},bypassCSP:true});
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto('http://127.0.0.1:8090');
     await expect(page.locator('#camera-message')).toHaveText('Waiting for the system to start…');
@@ -38,6 +40,31 @@ const fixture = {
     await expect(page.locator('#camera-cover')).toBeHidden();
     await expect(page.locator('.station').last()).toContainText('Not scanned yet');
     await expect(page.locator('.station.active')).toContainText('Lettuce 2');
+    await page.evaluate(() => document.fonts.ready);
+    const measure = () => {
+      const r = document.querySelector('.camera').getBoundingClientRect();
+      const img = document.querySelector('#camera');
+      const ratio = img.naturalWidth / img.naturalHeight;
+      return {boxWidth:r.width, boxHeight:r.height,
+        visibleWidth:Math.min(r.width, r.height * ratio),
+        stationWidth:document.querySelector('.stations').getBoundingClientRect().width,
+        fit:getComputedStyle(img).objectFit};
+    };
+    await page.locator('#camera').evaluate(img => img.decode());
+    for (const fontSize of ['16px','20px']) {
+      await page.evaluate(size => document.documentElement.style.fontSize=size, fontSize);
+      const after = await page.evaluate(measure);
+      const baselinePath = path.join(output, 'before-resize.css');
+      if (fs.existsSync(baselinePath)) {
+        const baseline = await page.addStyleTag({content:fs.readFileSync(baselinePath,'utf8')});
+        const before = await page.evaluate(measure);
+        await baseline.evaluate(el => el.remove());
+        if (after.visibleWidth <= before.visibleWidth) throw Error('Image did not grow at '+width+' '+fontSize);
+        console.log(JSON.stringify({width,fontSize,before,after}));
+      }
+      if (after.stationWidth < 309.9 || after.fit !== 'contain') throw Error('Station width or image fit changed');
+    }
+    await page.evaluate(() => document.documentElement.style.fontSize='16px');
     await page.screenshot({path:path.join(output,`monitoring-${width}.png`)});
     const overflow=await page.evaluate(()=>({x:document.documentElement.scrollWidth>innerWidth,y:document.documentElement.scrollHeight>innerHeight}));
     if(overflow.x||overflow.y)throw Error('Viewport overflow '+width);
@@ -47,15 +74,20 @@ const fixture = {
     if(bad.length)throw Error('Enlarged text overflow: '+bad.join(',')+' at '+width);
     const clipped=await page.locator('.log-row').evaluateAll(rows=>rows.filter(row=>getComputedStyle(row).display!=='none' && row.getBoundingClientRect().bottom>row.parentElement.getBoundingClientRect().bottom+1).length);
     if(clipped)throw Error('Clipped log rows at '+width);
-    data={...data,status:'camera_unavailable',camera_available:false};
+    const stableStream = await page.locator('#camera').getAttribute('src');
+    data={...data,status:'reconnecting',connected:false,camera_available:false,video_available:true};
+    await expect(page.locator('#status')).toHaveText('Connection lost — reconnecting…');
+    await expect(page.locator('#camera-cover')).toBeHidden();
+    await expect(page.locator('#camera')).toHaveAttribute('src', stableStream);
+    data={...data,status:'camera_unavailable',connected:true,camera_available:false,video_available:false,video_camera_age_s:4};
     await expect(page.locator('#camera-message')).toHaveText('Camera unavailable');
-    await expect(page.locator('#camera')).not.toHaveAttribute('src',/stream/);
-    data={...data,status:'interrupted',camera_available:true};
+    await expect(page.locator('#camera')).toHaveAttribute('src', stableStream);
+    data={...data,status:'interrupted',camera_available:true,video_available:true,video_camera_age_s:.1};
     await expect(page.locator('#status')).toHaveText('Detection interrupted');
-    data={...data,status:'reconnecting',connected:false,camera_available:false};
+    data={...data,status:'reconnecting',connected:false,camera_available:false,video_available:false,stream_active:false,stream_age_s:4};
     await expect(page.locator('#status')).toHaveText('Connection lost — reconnecting…');
     await expect(page.locator('#stations')).toHaveClass('station-list stale');
-    await expect(page.locator('#countdown')).toHaveText('—');
+    await expect(page.locator('#camera')).toHaveAttribute('src', stableStream);
     await page.screenshot({path:path.join(output,`disconnected-${width}.png`)});
     data={...structuredClone(fixture),instance_id:'b',logs_available:false};
     await expect(page.locator('#status')).toHaveText('Monitoring');

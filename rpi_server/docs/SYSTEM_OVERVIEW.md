@@ -32,9 +32,9 @@ Each station follows:
 
 The nominal four-station cycle is:
 
-`T = 4 × (30 + 5 + 1 + 30 + 5 + 1) + 3 × 10 + 15 = 333 seconds`.
+`T = 4 × (60 + 15 + 1 + 60 + 15 + 1) + 3 × 10 + 10 = 648 seconds` (~10.8 minutes).
 
-The first startup begins at station 1 upper position. Actual elapsed time can include loop scheduling and model-switch overhead. The timers represent the existing mechanical scan sequence; this software does not add motor drivers or position feedback. Align physical motion with the schedule before enabling automatic operation.
+The cycle allocates 60 seconds for the upper foliage detection window, 15 seconds transit down to lower position, 1 second settling, 60 seconds for the lower foliage detection window, 15 seconds transit back up, 1 second settling, 10 seconds travel between stations 1–3, and 10 seconds loop back to station 1 after station 4. The first startup begins at station 1 upper position. Actual elapsed time can include loop scheduling and model-switch overhead. The timers represent the existing mechanical scan sequence; this software does not add motor drivers or position feedback. Align physical motion with the schedule before enabling automatic operation.
 
 Every camera acquisition receives immutable sequence, monotonic capture time, station, position, phase, and scan ID metadata. Capture is stamped before acquiring the frame, conservatively rejecting a capture spanning a transition. The controller advances even when no frames arrive. Inference is suppressed during transit and settling. Results finishing after their window are discarded.
 

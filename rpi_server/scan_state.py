@@ -1,26 +1,5 @@
-"""
-scan_state.py — Explicit scan state machine for FarmCam
-=========================================================
-Replaces the bare globals (current_state / active_station_id) in main.py.
-
-State sequence per station:
-    DETECT_UPPER → TRANSIT_TO_LOWER → SETTLING → DETECT_LOWER
-    → TRANSIT_TO_UPPER → MOVING_TO_STATION → SETTLING → DETECT_UPPER (next)
-
-All timing values are read from config.py.
-The clock is injectable (time_fn) so tests can run with a FakeClock.
-
-Usage in main.py (coordinator section only):
-    from scan_state import ScanStateMachine, ScanPhase, FrameMeta
-    sm = ScanStateMachine()
-    sm.start()
-
-    # In detect_loop tick:
-    sm.tick()          # drive transitions
-    if not sm.is_detecting:
-        continue       # skip inference during transit / moving / settling
-
-    meta = sm.make_frame_meta(seq)   # stamp every accepted frame
+"""Alternating four-station scan schedule with immutable per-run timings.
+The motor is controlled separately; only an explicit start begins scanning.
 """
 
 from __future__ import annotations
@@ -32,11 +11,14 @@ from enum import Enum, auto
 from typing import Callable, List, Optional
 
 import config
+from scan_settings import ScanSettings
 
 
 # ── Phase enum ───────────────────────────────────────────────────────────────
 
 class ScanPhase(Enum):
+    INITIAL_DELAY     = auto()
+    RETURNING         = auto()
     IDLE              = auto()
     MOVING_TO_STATION = auto()
     SETTLING          = auto()
@@ -48,7 +30,9 @@ class ScanPhase(Enum):
     # Human-readable labels for the UI
     def label(self) -> str:
         return {
-            ScanPhase.IDLE:              "Idle",
+            ScanPhase.INITIAL_DELAY: "Starting scan",
+            ScanPhase.RETURNING: "Returning to lettuce 1",
+            ScanPhase.IDLE: "Ready to start",
             ScanPhase.MOVING_TO_STATION: "Moving",
             ScanPhase.SETTLING:          "Settling",
             ScanPhase.DETECT_UPPER:      "Detecting (Upper)",
@@ -99,6 +83,9 @@ class ScanStateMachine:
         self._stations    = list(stations or config.LETTUCE_SEQUENCE)
         self._time_fn     = time_fn or time.monotonic
 
+        self.settings = ScanSettings()
+        self.run_id = None
+        self._position = "lower"
         self._station_idx: int      = 0
         self._phase:       ScanPhase = ScanPhase.IDLE
         self._phase_started:  float  = 0.0
@@ -112,61 +99,47 @@ class ScanStateMachine:
 
     # ── Public start / stop ───────────────────────────────────────────────
 
-    def start(self) -> None:
-        """Begin the first detection window immediately."""
-        self._begin_phase(ScanPhase.DETECT_UPPER)
+    def start(self, settings=None) -> None:
+        if self._phase is not ScanPhase.IDLE:
+            raise RuntimeError('A scan is already running')
+        self.settings = ScanSettings.parse((settings or self.settings).to_dict())
+        self._station_idx = 0
+        self._position = 'lower'
+        self.run_id = str(uuid.uuid4())
+        self._begin_phase(ScanPhase.INITIAL_DELAY if self.settings.initial_delay_s else ScanPhase.DETECT_LOWER)
 
     def stop(self) -> None:
-        self._phase = ScanPhase.IDLE
-
-    # ── Main tick (call from detect_loop every iteration) ─────────────────
+        self._begin_phase(ScanPhase.IDLE)
 
     def tick(self) -> Optional[ScanPhase]:
-        """Advance the state machine.  Returns the new phase if a transition
-        happened, None otherwise."""
-        now     = self._time_fn()
-        elapsed = now - self._phase_started
-        p       = self._phase
+        # Anchor transitions to the planned deadline, not the inference-loop
+        # wake-up time, so processing latency does not accumulate motor drift.
+        self._scheduled_start = self._phase_started + self.phase_duration
+        try:
+            return self._tick_due()
+        finally:
+            self._scheduled_start = None
 
-        if p is ScanPhase.IDLE:
+    def _tick_due(self) -> Optional[ScanPhase]:
+        p = self._phase
+        if p is ScanPhase.IDLE or self._time_fn() < self._phase_started + self.phase_duration:
             return None
-
-        if p is ScanPhase.SETTLING:
-            if elapsed >= config.SETTLE_SECS:
-                return self._begin_phase(self._next_after_settle)
-            return None
-
-        if p is ScanPhase.DETECT_UPPER:
-            if elapsed >= config.DETECT_WINDOW_SECS:
-                return self._begin_phase(ScanPhase.TRANSIT_TO_LOWER)
-            return None
-
-        if p is ScanPhase.TRANSIT_TO_LOWER:
-            if elapsed >= config.TRANSIT_DOWN_SECS:
-                return self._begin_phase(ScanPhase.SETTLING,
-                                         next_after=ScanPhase.DETECT_LOWER)
-            return None
-
-        if p is ScanPhase.DETECT_LOWER:
-            if elapsed >= config.DETECT_WINDOW_SECS:
-                return self._begin_phase(ScanPhase.TRANSIT_TO_UPPER)
-            return None
-
+        if p is ScanPhase.INITIAL_DELAY:
+            return self._begin_phase(ScanPhase.DETECT_LOWER)
+        if p in (ScanPhase.MOVING_TO_STATION, ScanPhase.RETURNING):
+            return self._begin_phase(ScanPhase.DETECT_LOWER if self.station % 2 else ScanPhase.DETECT_UPPER)
         if p is ScanPhase.TRANSIT_TO_UPPER:
-            if elapsed >= config.TRANSIT_UP_SECS:
-                self._move_seconds = (config.LOOP_AFTER_4_SECS if self.station == 4
-                                      else config.MOVE_SECS)
-                self._advance_station()
-                return self._begin_phase(ScanPhase.MOVING_TO_STATION)
-            return None
-
-        if p is ScanPhase.MOVING_TO_STATION:
-            if elapsed >= self._move_duration():
-                return self._begin_phase(ScanPhase.SETTLING,
-                                         next_after=ScanPhase.DETECT_UPPER)
-            return None
-
-        return None
+            return self._begin_phase(ScanPhase.DETECT_UPPER)
+        if p is ScanPhase.TRANSIT_TO_LOWER:
+            return self._begin_phase(ScanPhase.DETECT_LOWER)
+        first = ScanPhase.DETECT_LOWER if self.station % 2 else ScanPhase.DETECT_UPPER
+        if p is first:
+            return self._begin_phase(ScanPhase.TRANSIT_TO_UPPER if self.station % 2 else ScanPhase.TRANSIT_TO_LOWER)
+        old = self.station
+        self._move_seconds = (self.settings.return_s if old == 4 else
+                              getattr(self.settings, f'travel_{old}_{old+1}_s'))
+        self._advance_station()
+        return self._begin_phase(ScanPhase.RETURNING if old == 4 else ScanPhase.MOVING_TO_STATION)
 
     # ── Properties for callers ────────────────────────────────────────────
 
@@ -188,7 +161,7 @@ class ScanStateMachine:
 
     @property
     def position(self) -> str:
-        return self._phase.position()
+        return self._position
 
     @property
     def phase_started_at(self) -> float:
@@ -223,6 +196,9 @@ class ScanStateMachine:
     def state_dict(self) -> dict:
         """Serialisable snapshot for /api/system and Flutter countdown sync."""
         return {
+            "run_id": self.run_id,
+            "running": self.phase is not ScanPhase.IDLE,
+            "settings": self.settings.to_dict(),
             "phase":            self._phase.name,
             "phase_label":      self._phase.label(),
             "position":         self.position,
@@ -266,10 +242,15 @@ class ScanStateMachine:
         phase:      ScanPhase,
         next_after: ScanPhase = ScanPhase.DETECT_UPPER,
     ) -> ScanPhase:
+        if phase is ScanPhase.DETECT_UPPER:
+            self._position = "upper"
+        elif phase is ScanPhase.DETECT_LOWER:
+            self._position = "lower"
         self._phase          = phase
-        self._phase_started  = self._time_fn()
+        scheduled = getattr(self, '_scheduled_start', None)
+        self._phase_started = self._time_fn() if scheduled is None else scheduled
         self._phase_duration = self._phase_to_duration(phase)
-        if phase is ScanPhase.MOVING_TO_STATION:
+        if phase in (ScanPhase.MOVING_TO_STATION, ScanPhase.RETURNING):
             self._phase_duration = self._move_seconds
         if phase is ScanPhase.SETTLING:
             self._next_after_settle = next_after
@@ -291,14 +272,11 @@ class ScanStateMachine:
         """After station 4 the loop-back path is longer."""
         return self._move_seconds
 
-    @staticmethod
-    def _phase_to_duration(phase: ScanPhase) -> float:
+    def _phase_to_duration(self, phase):
         return {
-            ScanPhase.DETECT_UPPER:      config.DETECT_WINDOW_SECS,
-            ScanPhase.TRANSIT_TO_LOWER:  config.TRANSIT_DOWN_SECS,
-            ScanPhase.SETTLING:          config.SETTLE_SECS,
-            ScanPhase.DETECT_LOWER:      config.DETECT_WINDOW_SECS,
-            ScanPhase.TRANSIT_TO_UPPER:  config.TRANSIT_UP_SECS,
-            ScanPhase.MOVING_TO_STATION: config.MOVE_SECS,  # overridden for station 4
-            ScanPhase.IDLE:              0.0,
+            ScanPhase.INITIAL_DELAY: self.settings.initial_delay_s,
+            ScanPhase.DETECT_UPPER: self.settings.scan_s,
+            ScanPhase.DETECT_LOWER: self.settings.scan_s,
+            ScanPhase.TRANSIT_TO_UPPER: self.settings.raise_s,
+            ScanPhase.TRANSIT_TO_LOWER: self.settings.lower_s,
         }.get(phase, 0.0)

@@ -1,4 +1,4 @@
-"""
+﻿"""
 FarmCam – Central Configuration
 ================================
 All tunables, thresholds, timings, pins, and paths live here.
@@ -12,22 +12,21 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Scan timing (seconds)
 # ---------------------------------------------------------------------------
-# Upper-position detection window
-DETECT_WINDOW_SECS  = 30.0
-# Motor transit down to lower position
-TRANSIT_DOWN_SECS   = 5.0
-# Motor transit back up to upper position (after DETECT_LOWER)
-TRANSIT_UP_SECS     = 5.0
-# Inter-station travel time (stations 1-3)
+# Upper-position and lower-position detection window (1 minute per part)
+DETECT_WINDOW_SECS  = 60.0
+# Motor transit down to lower position (15 seconds)
+TRANSIT_DOWN_SECS   = 15.0
+# Motor transit back up to upper position (15 seconds)
+TRANSIT_UP_SECS     = 15.0
+# Inter-station travel time between lettuces (10 seconds)
 MOVE_SECS           = 10.0
-# Travel time after station 4 (longer loop path back to station 1)
-LOOP_AFTER_4_SECS   = 15.0
+# Travel time after station 4 (loop path back to station 1)
+LOOP_AFTER_4_SECS   = 10.0
 # Discard frames captured within this many seconds of a phase change
 SETTLE_SECS         = 1.0
 
-# Cycle time formula (for reference / documentation):
-# T_cycle = 4*(DETECT*2 + T_down + T_up + 2*SETTLE) + 3*MOVE + LOOP
-#         = 4*(30+30+5+5+2*1) + 3*10 + 15 = 333 s
+# Cycle time formula:
+# T_cycle = 4*(60 + 60 + 15 + 15 + 2*1) + 3*10 + 10 = 648 s
 
 # ---------------------------------------------------------------------------
 # Station ROIs — normalized [x1, y1, x2, y2] in 0..1 range
@@ -68,7 +67,7 @@ PX_PER_MM = 20.0   # calibrate with a ruler at camera working distance
 PER_CLASS_SIZE = {
     "whiteflies": (16,    3600, 0.3,  5.0),
     "whitefly":   (16,    3600, 0.3,  5.0),
-    "worm":       (150, 40000, 0.1, 12.0),
+    "worm":       (25, 40000, 0.1, 12.0),
     "fungus":     (25,  999999, 0.05, 20.0),
 }
 
@@ -81,7 +80,8 @@ NMS_IOU_THRESHOLD = 0.45
 REG_MAX = 16
 MIN_MASK_AREA_PX    = 4
 MIN_MASK_FILL_RATIO = 0.05
-PER_CLASS_MIN_BOX_AREA = {"whiteflies": 16, "whitefly": 16, "fungus": 25}
+PER_CLASS_MIN_BOX_AREA = {"whiteflies": 16, "whitefly": 16, "worm": 25, "fungus": 25}
+AUTO_START_SCAN = True
 
 # ---------------------------------------------------------------------------
 # Skin / hand rejection  (YCrCb colour space)
@@ -176,7 +176,7 @@ RETENTION_MAX_DAYS = 30
 # ---------------------------------------------------------------------------
 # ESP32
 # ---------------------------------------------------------------------------
-ESP32_IP   = os.environ.get("FARMCAM_ESP32_IP", "10.244.166.161")
+ESP32_IP   = os.environ.get("FARMCAM_ESP32_IP", "10.229.135.161")
 ESP32_PORT = 80
 
 # ---------------------------------------------------------------------------

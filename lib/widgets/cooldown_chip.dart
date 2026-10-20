@@ -113,10 +113,10 @@ class _CooldownChipState extends State<CooldownChip>
             ? const EdgeInsets.symmetric(horizontal: 8, vertical: 4)
             : const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          color: _ready ? _green.withValues(alpha: 0.10) : _card,
+          color: _ready ? _green.withOpacity(0.10) : _card,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: _ready ? _green.withValues(alpha: 0.3) : _border,
+            color: _ready ? _green.withOpacity(0.3) : _border,
           ),
         ),
         child: Row(
@@ -187,7 +187,7 @@ class _ArcPainter extends CustomPainter {
 
     // Track
     final trackPaint = Paint()
-      ..color = color.withValues(alpha: 0.15)
+      ..color = color.withOpacity(0.15)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.8
       ..strokeCap = StrokeCap.round;

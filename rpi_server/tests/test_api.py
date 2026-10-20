@@ -1,3 +1,4 @@
+from scan_settings import ScanSettings
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import config
@@ -16,7 +17,7 @@ def test_routes_filters_errors_and_review(tmp_path):
     pairs = [(r.path,method) for r in app.routes for method in getattr(r,'methods',[])]
     assert len(pairs) == len(set(pairs))
     client = TestClient(app)
-    assert client.get('/api/config').json()['cycle_time_secs'] == 333
+    assert client.get('/api/config').json()['cycle_time_secs'] is None
     assert client.get('/api/config').json()['buzzer_pin'] == 26
     assert client.get('/api/logs?station=1').json()['total'] == 1
     assert client.get('/api/logs?station=2').json()['total'] == 0
@@ -38,7 +39,7 @@ def test_snapshot_round_trip_and_traversal(tmp_path, monkeypatch):
     monkeypatch.setattr(config,'SNAPSHOT_DIR',tmp_path/'snapshots')
     db = PersistenceDB(str(tmp_path/'farm.db'))
     tid = db.commit_scan(db.begin_scan(1,'upper'),1,'upper',[[5,5,20,20,'worm',.9]])[0]
-    sm = ScanStateMachine(); sm.start()
+    sm = ScanStateMachine(); sm.start(ScanSettings(scan_s=30, initial_delay_s=0, return_s=10))
     writer = SnapshotWriter(db)
     writer._write_snapshot(dict(frame=np.zeros((80,100,3),np.uint8),
         dets=[[5,5,20,20,'worm',.9]],track_id=tid,frame_meta=sm.make_frame_meta(1),ts=1000))

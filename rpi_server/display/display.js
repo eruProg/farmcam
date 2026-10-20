@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const labels = {waiting:'Waiting for system', starting:'Starting monitoring…', monitoring:'Monitoring', reconnecting:'Connection lost — reconnecting…', camera_unavailable:'Camera unavailable', interrupted:'Detection interrupted'};
-const phaseLabels = {DETECT_UPPER:'Scanning upper',DETECT_LOWER:'Scanning lower',TRANSIT_TO_LOWER:'Moving down',TRANSIT_TO_UPPER:'Moving up',MOVING_TO_STATION:'Moving to station',SETTLING:'Settling',IDLE:'Waiting for scan'};
+const phaseLabels = {INITIAL_DELAY:'Starting scan',RETURNING:'Returning to lettuce 1',DETECT_UPPER:'Scanning upper',DETECT_LOWER:'Scanning lower',TRANSIT_TO_LOWER:'Moving down',TRANSIT_TO_UPPER:'Moving up',MOVING_TO_STATION:'Moving to station',SETTLING:'Settling',IDLE:'Waiting for scan'};
 const smsLabels = {idle:'No message',queued:'Queued',sending:'Sending',sent:'Submitted',failed:'Failed',unknown:'Unconfirmed'};
 let current = null, everConnected = false, instance = null, offset = null, previousServerTime = null;
 let scan = null, streamWanted = false, streamStarted = null, nextStreamAttempt = 0, inFlight = false, lastResponse = null;
@@ -23,7 +23,7 @@ function startStream() {
 }
 camera.addEventListener('error', () => {
   stopStream(); nextStreamAttempt = performance.now() + 3000;
-  $('camera-cover').hidden = false; text('camera-message', 'Reconnecting camera…');
+  $('camera-cover').hidden = false; text('camera-message', 'Reconnecting video…');
 });
 function renderStations(rows, live) {
   $('stations').replaceChildren();
@@ -80,24 +80,38 @@ function render(data, sent, received) {
   const restart = instance !== null && data.instance_id !== instance;
   current = data; everConnected ||= data.connected;
   synchronize(data, sent, received);
-  text('status', labels[data.status] || labels.waiting);
+  text('status', data.status === 'monitoring' && data.scan?.phase === 'IDLE' ? 'Ready to start scan' : labels[data.status] || labels.waiting);
   $('connection').className = 'connection ' + (data.status === 'monitoring' ? 'good' : everConnected ? 'warning' : '');
   text('freshness', data.connected ? 'Last completed scans' : data.updated_at ? 'Last known · ' + timeLabel(data.updated_at) : 'Awaiting data');
   text('update-time', data.connected ? 'Local monitoring' : data.updated_at ? 'Data paused · ' + timeLabel(data.updated_at) : 'Local monitoring');
   renderStations(Array.isArray(data.stations) ? data.stations : [], data.connected);
   renderLogs(data);
-  text('pump', data.pump_active === null || !data.connected ? 'Unavailable' : data.pump_active ? 'Running' : 'Idle');
+  const cd = data.cooldowns || {};
+  const pumpRemaining = Number(cd.pump?.remaining_s || 0);
+  const smsRemaining = Number(cd.sms?.remaining_s || 0);
+  text('pump', data.pump_active === null || !data.connected ? 'Unavailable' : data.pump_active ? 'Running' : pumpRemaining > 0 ? `Cooldown (${Math.ceil(pumpRemaining)}s)` : 'Ready');
   text('buzzer', data.buzzer_muted === null || !data.connected ? 'Unavailable' : data.buzzer_muted ? 'Muted' : 'On');
-  text('sms', data.connected ? smsLabels[data.sms_status] || 'Unavailable' : 'Unavailable');
-  streamWanted = Boolean(data.connected && data.camera_available);
-  if (restart) {stopStream(); nextStreamAttempt = performance.now() + 500;}
-  if (!streamWanted) stopStream();
-  const streamStalled = streamStarted !== null && performance.now() - streamStarted > 6000 && (!data.stream_active || data.stream_age_s === null || data.stream_age_s > 3);
-  if (streamStalled) {stopStream(); nextStreamAttempt = performance.now() + 1000;}
-  const flowing = streamWanted && data.stream_active && data.stream_age_s !== null && data.stream_age_s <= 3;
+  text('sms', data.connected ? (smsRemaining > 0 ? `Cooldown (${Math.ceil(smsRemaining)}s)` : smsLabels[data.sms_status] || 'Ready') : 'Unavailable');
+  if (data.connected && (pumpRemaining > 0 || smsRemaining > 0)) {
+    const parts = [];
+    if (pumpRemaining > 0) parts.push(`Pump: ${Math.ceil(pumpRemaining)}s`);
+    if (smsRemaining > 0) parts.push(`SMS: ${Math.ceil(smsRemaining)}s`);
+    text('cooldown-header', `⏳ ${parts.join(' · ')}`);
+    $('cooldown-header').hidden = false;
+  } else {
+    $('cooldown-header').hidden = true;
+  }
+  // Status polling and video transport are independent. Keep the existing
+  // browser stream through health delays and upstream restarts; the relay heals it.
+  streamWanted = Boolean(everConnected || data.connected || data.stream_active);
+  const flowing = data.video_available ?? Boolean(data.camera_available && data.stream_active && data.stream_age_s !== null && data.stream_age_s <= 3);
   $('camera-cover').hidden = flowing;
   $('camera-label').hidden = !flowing;
-  text('camera-message', data.status === 'waiting' ? 'Waiting for the system to start…' : data.status === 'reconnecting' ? labels.reconnecting : data.status === 'starting' ? labels.starting : !data.camera_available ? 'Camera unavailable' : 'Connecting camera…');
+  const captureMissing = data.video_camera_age_s !== undefined
+    ? data.video_camera_age_s === null || data.video_camera_age_s > 3
+    : !data.camera_available;
+  text('camera-message', data.status === 'waiting' ? 'Waiting for the system to start…'
+    : captureMissing && data.connected ? 'Camera unavailable' : 'Reconnecting video…');
   startStream(); tick();
 }
 function tick() {
@@ -105,15 +119,40 @@ function tick() {
   const live = current?.connected && lastResponse !== null && performance.now() - lastResponse < 5000;
   if (scan && live && offset !== null) {
     const remaining = Math.max(0, Math.min(scan.phase_duration_s, scan.phase_started_at + scan.phase_duration_s - (performance.now()/1000 + offset)));
-    text('scan-label', `${phaseLabels[scan.phase] || 'Scanning'} · Lettuce ${scan.station}`);
-    text('countdown', `${Math.ceil(remaining)}s`);
-    $('scan-progress').value = scan.phase_duration_s > 0 ? 1 - remaining / scan.phase_duration_s : 0;
+    const secs = remaining.toFixed(1);
+    let phaseText = '';
+    if (scan.phase === 'DETECT_UPPER') {
+      phaseText = `Scanning Upper Part (${secs} seconds)`;
+    } else if (scan.phase === 'DETECT_LOWER') {
+      phaseText = `Scanning Lower Part (${secs} seconds)`;
+    } else if (scan.phase === 'TRANSIT_TO_LOWER') {
+      phaseText = 'Moving to Lower Part';
+    } else if (scan.phase === 'TRANSIT_TO_UPPER') {
+      phaseText = 'Moving to Upper Part';
+    } else if (scan.phase === 'MOVING_TO_STATION' || scan.phase === 'SETTLING') {
+      phaseText = `Moving To Lettuce ${scan.station}`;
+    } else if (scan.phase === 'IDLE') {
+      phaseText = 'Ready to start scan';
+    } else {
+      phaseText = `${phaseLabels[scan.phase] || 'Scanning'} (${secs} seconds)`;
+    }
+    text('camera-label', `Live Camera Feed - ${phaseText}`);
   } else {
-    text('scan-label', everConnected ? 'Scan updates paused' : 'Waiting for scan'); text('countdown', '—'); $('scan-progress').value = 0;
+    text('camera-label', everConnected ? 'Live Camera Feed - Reconnecting…' : 'Live Camera Feed');
   }
   if (!live && current?.connected) disconnected();
-  if (live && current.camera_available && Number.isFinite(current.camera_frame_age_s) && current.camera_frame_age_s + (performance.now() - lastResponse)/1000 > 3) {
-    render({...current,camera_available:false,status:current.status==='monitoring'?'camera_unavailable':current.status},performance.now(),performance.now());
+  // Expire video separately even if status polling stops. Never show a frozen
+  // image as live merely because an HTTP stream remains open.
+  if (current && lastResponse !== null) {
+    const elapsed = (performance.now() - lastResponse) / 1000;
+    const captureAge = current.video_camera_age_s ?? current.camera_frame_age_s;
+    if (current.stream_age_s === null || current.stream_age_s + elapsed > 3 ||
+        (Number.isFinite(captureAge) && captureAge + elapsed > 3)) {
+      $('camera-cover').hidden = false;
+      $('camera-label').hidden = true;
+      text('camera-message', live && Number.isFinite(captureAge) && captureAge + elapsed > 3
+        ? 'Camera unavailable' : everConnected ? 'Reconnecting video…' : 'Waiting for the system to start…');
+    }
   }
   startStream();
 }

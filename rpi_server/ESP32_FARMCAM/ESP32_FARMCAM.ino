@@ -74,8 +74,8 @@ const char* WIFI_SSID = "FarmCam";
 const char* WIFI_PASS = "farmcam1";
 
 // ─── Farmer SMS Number ────────────────────────────────────────
-const char* FARMER_PHONE = "";   // farmer handset, no '+' (SIM800L)flj
-const char* SIM800L_OWN  = "";   // SIM inside SIM800L (sender)
+const char* FARMER_PHONE = "09916425163";   // farmer handset, no '+' (SIM800L)flj
+const char* SIM800L_OWN  = "09693141995";   // SIM inside SIM800L (sender)
 
 // ─── Network ─────────────────────────────────────────────────
 #define ESP32_HTTP_PORT   80      // HTTP server port (RPi5 posts here)
@@ -177,7 +177,7 @@ void _yieldHttp(unsigned long ms) {
 void _buzz(int onMs, int offMs) {
   digitalWrite(BUZZER_PIN, HIGH);
   _yieldHttp(onMs);
-  digitalWrite(BUZZER_PIN, manualBuzz ? HIGH : LOW);
+  digitalWrite(BUZZER_PIN, LOW);
   _yieldHttp(offMs);
 }
 
@@ -457,6 +457,7 @@ String processCommand(String cmd) {
     relayON();
     pumpActive = true;
     pumpOffAt = millis() + 2500;  // auto-off after 2.5s (single cycle)
+    pendingBuzz = 4;
     Serial.println("[PUMP] ON (single cycle 2.5s)");
     return "OK";
 
@@ -466,7 +467,6 @@ String processCommand(String cmd) {
     pumpOffAt = millis() + 4000;  // 4s safety watchdog (refreshed by heartbeat)
     pendingBuzz = 0;
     manualBuzz = true;
-    digitalWrite(BUZZER_PIN, HIGH);
     Serial.println("[PUMP] HOLD (manual hold active)");
     return "OK";
 
@@ -481,7 +481,7 @@ String processCommand(String cmd) {
     relayOFF();
     pumpActive = false;
     pumpOffAt = 0;
-    if (manualBuzz) buzzerOFF();
+    buzzerOFF();
     Serial.println("[PUMP] OFF");
     return "OK";
 
@@ -608,13 +608,27 @@ void setup() {
 void loop() {
   serviceHardware();
 
+  // Manual hold reversing beep pulses
+  if (manualBuzz) {
+    static unsigned long lastManualPulse = 0;
+    static bool manualPulseState = false;
+    if (millis() - lastManualPulse >= 250) {
+      lastManualPulse = millis();
+      manualPulseState = !manualPulseState;
+      digitalWrite(BUZZER_PIN, manualPulseState ? HIGH : LOW);
+    }
+  }
+
   if (pendingBuzz > 0) {
     int kind = pendingBuzz;
     pendingBuzz = 0;
     if (kind == 1) buzzerPest();
     else if (kind == 2) buzzerFungus();
     else if (kind == 3) buzzerCritical();
-    else if (kind == 4) { Serial.println("[BUZZ] 2.5s spray tone"); _buzz(2500, 0); }
+    else if (kind == 4) {
+      Serial.println("[BUZZ] Pesticide spray warning (reversing beep)");
+      for (int i = 0; i < 5; i++) { _buzz(250, 250); }
+    }
   }
 
   if (simDiagnosticsPending && !pumpActive) {

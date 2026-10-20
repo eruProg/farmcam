@@ -163,9 +163,12 @@ def install(args, account):
         relative = '.config/labwc/autostart' if session == 'labwc' else '.config/wayfire.ini'
         target = home/relative
         default = Path('/etc/xdg/labwc/autostart') if session == 'labwc' else Path('/etc/wayfire/defaults.ini')
-        if not target.exists() and not default.exists():
-            raise RuntimeError(f'No desktop startup configuration found at {target} or {default}; existing desktop defaults must be preserved.')
-        original = target.read_text() if target.exists() else default.read_text()
+        if target.exists():
+            original = target.read_text()
+        elif default.exists():
+            original = default.read_text()
+        else:
+            original = ""
         manifest.write(target, autostart_text(original, launch, session), owner, block=True)
     # Newly created config parents must also be writable by the desktop user.
     parent = target.parent

@@ -1,4 +1,4 @@
-"""
+﻿"""
 verifier.py — Five-gate detection verifier
 ==========================================
 All logic runs DOWNSTREAM of the frozen detect_frame() output and
@@ -176,11 +176,11 @@ class DetectionVerifier:
             if suppress_pests:
                 return "hand_in_frame"
 
-            # Gate 3: skin rejection — bbox crop
-            crop = _padded_crop(frame_bgr, x1, y1, x2, y2, pad=4)
-            if crop.size > 0 and _skin_ratio(crop) > config.SIGMA_MAX:
-                return f"skin_gt_{config.SIGMA_MAX}"
-
+            # Gate 3: skin rejection - bbox crop (whiteflies only; worms are naturally flesh/tan/brown)
+            if name in _WHITEFLY_CLASSES:
+                crop = _padded_crop(frame_bgr, x1, y1, x2, y2, pad=4)
+                if crop.size > 0 and _skin_ratio(crop) > config.SIGMA_MAX:
+                    return f"skin_gt_{config.SIGMA_MAX}"
             # Gate 4: whitefly context
             if name in _WHITEFLY_CLASSES:
                 ring = _ring_crop(frame_bgr, x1, y1, x2, y2, ring=16)

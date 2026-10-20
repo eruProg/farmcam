@@ -6,12 +6,12 @@ from pathlib import Path
 import time
 
 import httpx
-from anyio import CancelScope
+from display_stream import SharedCameraStream
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 ROOT = Path(__file__).resolve().parent
-ASSETS = ROOT.parent / 'assets'
+ASSETS = ROOT / 'assets' if (ROOT / 'assets').exists() else ROOT.parent / 'assets'
 UPSTREAM = 'http://127.0.0.1:8000'
 
 
@@ -30,8 +30,7 @@ class DisplayState:
         self.observed_at = None
         self.scan_observed_at = None
         self.logs_updated_at = None
-        self.stream_active = False
-        self.stream_last_chunk = None
+        self.relay = SharedCameraStream(client, clock)
         self._status_lock = asyncio.Lock()
         self._logs_lock = asyncio.Lock()
 
@@ -96,6 +95,14 @@ class DisplayState:
             status = 'camera_unavailable'
         else:
             status = 'monitoring'
+        relay = self.relay
+        stream_age = max(0, self.clock() - relay.received_at) if relay.received_at is not None else None
+        # New backends carry capture freshness independently of status requests.
+        # Older backends safely fall back to their health timestamp.
+        video_camera_age = (max(0, self.clock() - relay.captured_at)
+                            if relay.captured_at is not None else camera_age)
+        video_available = (stream_age is not None and stream_age <= 3
+                           and video_camera_age is not None and video_camera_age <= 3)
         system = self.system or {}
         scan = system.get('scan_state')
         scan = dict(scan) if isinstance(scan, dict) else None
@@ -113,11 +120,17 @@ class DisplayState:
             'stations': system.get('stations', []),
             'pump_active': health.get('pump_active') if connected else None,
             'buzzer_muted': system.get('buzzer_muted') if connected else None,
+            'cooldowns': system.get('cooldowns') if connected else None,
             'sms_status': (self.sms or {}).get('status'),
             'logs': self.logs, 'logs_available': self.logs_available,
             'logs_updated_at': self.logs_updated_at,
-            'stream_active': self.stream_active,
-            'stream_age_s': max(0, self.clock() - self.stream_last_chunk) if self.stream_last_chunk is not None else None,
+            'stream_active': relay.active,
+            'stream_age_s': stream_age,
+            'video_available': video_available,
+            'video_camera_age_s': video_camera_age,
+            'stream_error': relay.error,
+            'stream_reconnects': relay.reconnects,
+            'stream_viewers': relay.viewers,
         }
 
 
@@ -150,6 +163,7 @@ def create_app(client=None, poll=True):
             for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
+            await state.relay.close()
             if owns_client:
                 await upstream.aclose()
 
@@ -174,7 +188,7 @@ def create_app(client=None, poll=True):
 
     @app.get('/assets/{name}')
     async def asset(name: str):
-        if name not in files:
+        if name not in files or not files[name].exists():
             raise HTTPException(404)
         return FileResponse(files[name])
 
@@ -185,44 +199,13 @@ def create_app(client=None, poll=True):
     @app.get('/stream')
     async def stream():
         state = app.state.display
-        if not state.snapshot()['camera_available']:
-            raise HTTPException(503, 'Camera unavailable')
-        if state.stream_active:
-            raise HTTPException(409, 'Display stream already connected')
-        state.stream_active = True
-        state.stream_last_chunk = None
-        try:
-            request = state.client.build_request('GET', '/api/display/stream',
-                timeout=httpx.Timeout(4.0, connect=1.0))
-            response = await state.client.send(request, stream=True)
-            response.raise_for_status()
-            content_type = response.headers.get('content-type', '')
-            if not content_type.startswith('multipart/x-mixed-replace'):
-                raise ValueError('Unexpected stream format')
-        except (httpx.HTTPError, ValueError, asyncio.CancelledError) as exc:
-            state.stream_active = False
-            if 'response' in locals():
-                with CancelScope(shield=True):
-                    await response.aclose()
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            raise HTTPException(503, 'Camera unavailable')
-
-        async def chunks():
-            try:
-                async for chunk in response.aiter_bytes():
-                    state.stream_last_chunk = state.clock()
-                    yield chunk
-            except httpx.HTTPError:
-                return
-            finally:
-                with CancelScope(shield=True):
-                    try:
-                        await response.aclose()
-                    finally:
-                        state.stream_active = False
-                        state.stream_last_chunk = None
-        return StreamingResponse(chunks(), media_type=content_type)
+        # Each viewer gets the latest complete JPEG from ONE upstream reader.
+        # Browser reloads never own or cancel that shared connection.
+        if not state.ever_connected and not state.connected and not state.relay.active:
+            raise HTTPException(503, 'Waiting for backend')
+        state.relay.start()
+        return StreamingResponse(state.relay.frames(),
+            media_type='multipart/x-mixed-replace; boundary=frame')
 
     return app
 

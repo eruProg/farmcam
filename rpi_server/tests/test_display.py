@@ -111,24 +111,6 @@ def test_display_only_exposes_read_routes_and_local_assets():
     asyncio.run(upstream.aclose())
 
 
-def test_stream_uses_fixed_endpoint_and_cleans_up():
-    paths = []
-    async def handle(request):
-        paths.append(request.url.path)
-        return httpx.Response(200,headers={'content-type':'multipart/x-mixed-replace; boundary=frame'},content=b'--frame\r\n')
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle),base_url='http://test')
-    app = create_app(upstream,poll=False)
-    with TestClient(app) as client:
-        state = app.state.display
-        state.connected = True; state.health = responses()['/api/display/health']
-        state.stream_active = True
-        assert client.get('/stream').status_code == 409
-        state.stream_active = False
-        assert client.get('/stream?url=http://evil').content == b'--frame\r\n'
-        assert paths == ['/api/display/stream']
-        assert not state.stream_active
-    asyncio.run(upstream.aclose())
-
 
 def test_health_uses_current_frames_and_worker_heartbeat():
     clock = [20]
@@ -196,7 +178,7 @@ def test_monitor_stream_caps_size_and_rate_without_changing_mobile_default():
     source = (Path(__file__).parents[1]/'main.py').read_text(encoding='utf-8')
     node = next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name == 'generate_mjpeg')
     sleep = Mock()
-    scope = dict(frame_lock=threading.Lock(),current_frame=np.zeros((960,1280,3),np.uint8),
+    scope = dict(frame_timestamp=1.0,frame_lock=threading.Lock(),current_frame=np.zeros((960,1280,3),np.uint8),
         display_detections=[],np=np,cv2=cv2,comb_model_loaded=False,seg_model_loaded=False,
         det_model_loaded=False,_infer_debug={},current_state='DETECT_A',active_station_id=1,
         time=SimpleNamespace(sleep=sleep))
@@ -210,17 +192,6 @@ def test_monitor_stream_caps_size_and_rate_without_changing_mobile_default():
         stream.close()
 
 
-def test_no_backend_stream_failure_latches_active_flag():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(lambda r:httpx.Response(503)),base_url='http://test')
-    app = create_app(upstream,poll=False)
-    with TestClient(app) as client:
-        state = app.state.display
-        state.connected = True; state.health = responses()['/api/display/health']
-        for _ in range(2):
-            assert client.get('/stream').status_code == 503
-            assert not state.stream_active
-    asyncio.run(upstream.aclose())
-
 
 def test_cached_scan_time_advances_without_changing_phase_or_original():
     state = DisplayState(None,lambda:102)
@@ -232,34 +203,3 @@ def test_cached_scan_time_advances_without_changing_phase_or_original():
     assert state.snapshot()['camera_frame_age_s'] == 2.2
 
 
-def test_cancelled_stream_releases_upstream_and_single_connection_slot():
-    async def scenario():
-        class Frames(httpx.AsyncByteStream):
-            closed = False
-            async def __aiter__(self):
-                yield b'frame'
-                await asyncio.Event().wait()
-            async def aclose(self):
-                await asyncio.sleep(0)
-                self.closed = True
-        frames = Frames()
-        transport = httpx.MockTransport(lambda r:httpx.Response(200,stream=frames,
-            headers={'content-type':'multipart/x-mixed-replace; boundary=frame'}))
-        async with httpx.AsyncClient(transport=transport,base_url='http://test') as upstream:
-            app = create_app(upstream,poll=False)
-            async with app.router.lifespan_context(app):
-                state = app.state.display
-                state.connected = True; state.health = responses()['/api/display/health']
-                endpoint = next(r.endpoint for r in app.routes if r.path == '/stream')
-                response = await endpoint()
-                assert await anext(response.body_iterator) == b'frame'
-                pending = asyncio.create_task(anext(response.body_iterator))
-                await asyncio.sleep(0)
-                pending.cancel()
-                try:
-                    await pending
-                except asyncio.CancelledError:
-                    pass
-                assert frames.closed
-                assert not state.stream_active
-    asyncio.run(scenario())

@@ -81,13 +81,13 @@ class LettuceCard extends StatelessWidget {
           color: _card,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: isActive ? accent.withValues(alpha: 0.5) : _border,
+            color: isActive ? accent.withOpacity(0.5) : _border,
             width: isActive ? 1.5 : 1,
           ),
           boxShadow: isActive
               ? [
                   BoxShadow(
-                      color: accent.withValues(alpha: 0.08),
+                      color: accent.withOpacity(0.08),
                       blurRadius: 12,
                       spreadRadius: 1)
                 ]
@@ -136,7 +136,7 @@ class LettuceCard extends StatelessWidget {
                       shape: BoxShape.circle,
                       boxShadow: [
                         BoxShadow(
-                            color: _green.withValues(alpha: 0.4), blurRadius: 4)
+                            color: _green.withOpacity(0.4), blurRadius: 4)
                       ],
                     ),
                   ),

@@ -315,7 +315,7 @@ class _PhaseDotState extends State<_PhaseDot>
             color: color,
             shape: BoxShape.circle,
             boxShadow: [
-              BoxShadow(color: color.withValues(alpha: 0.4), blurRadius: 4)
+              BoxShadow(color: color.withOpacity(0.4), blurRadius: 4)
             ]),
       ),
     );
@@ -392,7 +392,7 @@ class _PhaseStepper extends StatelessWidget {
       children: List.generate(_phaseOrder.length, (i) {
         Color c;
         if (i < idx) {
-          c = _green.withValues(alpha: 0.5);
+          c = _green.withOpacity(0.5);
         } else if (i == idx) {
           c = _green;
         } else {

@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 import config
+from scan_settings import ScanSettings, load_settings, save_settings
 from scan_state import ScanStateMachine, ScanPhase
 from persistence import PersistenceDB, CooldownManager, _iou
 
@@ -41,7 +42,10 @@ def wire(runtime):
         _fault = None
         _wired = True
         _restore_stations()
-        _scan_sm.start()
+        try:
+            _scan_sm.settings = load_settings(config.DATA_DIR / 'scan_settings.json')
+        except (ValueError, OSError):
+            log.exception('Saved scan timings unavailable; enter timings before starting')
         _sync()
     except Exception:
         shutdown()
@@ -51,6 +55,7 @@ def wire(runtime):
 def get_shared_state():
     with _lock:
         return dict(scan_sm=_scan_sm, db=_db, cooldown_mgr=_cooldown_mgr,
+                    scan_state=_scan_sm.state_dict() if _scan_sm else None,
                     sms_broker=_sms_broker, buzzer_scheduler=_buzzer,
                     fault=_fault, ready=_wired,
                     pump_active=bool(_runtime and _runtime.pump_active))
@@ -59,6 +64,39 @@ def get_shared_state():
 def scan_state():
     with _lock:
         return _scan_sm.state_dict() if _scan_sm else None
+
+
+def timing_settings():
+    with _lock:
+        if not _wired or not _scan_sm:
+            raise RuntimeError('Scan controller unavailable')
+        return dict(settings=_scan_sm.settings.to_dict(), state=_scan_sm.state_dict())
+
+
+def start_scan(data):
+    settings = ScanSettings.parse(data)
+    with _lock:
+        if not _wired or not _scan_sm:
+            raise RuntimeError('Scan controller unavailable')
+        if _scan_sm.phase is not ScanPhase.IDLE:
+            raise RuntimeError('A scan is already running')
+        save_settings(config.DATA_DIR / 'scan_settings.json', settings)
+        _scan_sm.start(settings)
+        _sync()
+        return _scan_sm.state_dict()
+
+
+def stop_scan():
+    global _window
+    with _lock:
+        if not _wired or not _scan_sm:
+            raise RuntimeError('Scan controller unavailable')
+        if _window:
+            _db.abort_scan(_window['id'])
+            _window = None
+        _scan_sm.stop()
+        _sync()
+        return _scan_sm.state_dict()
 
 
 def tick():

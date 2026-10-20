@@ -219,7 +219,10 @@ class _AboutScreenState extends State<AboutScreen> {
                         _Row('Motor transit down',
                             '${_v("transit_down_secs")} s'),
                         _Row('Motor transit up', '${_v("transit_up_secs")} s'),
-                        _Row('Inter-station move', '${_v("move_secs")} s (×3)'),
+                        _Row('Lettuce 1 to 2', '${_v("move_secs")} s'),
+                        _Row('Lettuce 2 to 3', '${_v("travel_2_3_s")} s'),
+                        _Row('Lettuce 3 to 4', '${_v("travel_3_4_s")} s'),
+                        _Row('Initial wait only', '${_v("initial_delay_s")} s'),
                         _Row('Loop-back (St. 4)',
                             '${_v("loop_after_4_secs")} s'),
                         _Row('Settle after move', '${_v("settle_secs")} s'),
@@ -325,7 +328,8 @@ class _AboutScreenState extends State<AboutScreen> {
   }
 
   String _cycleSecs() {
-    final s = (_cfg['cycle_time_secs'] as num?)?.toDouble() ?? 333.0;
+    final s = (_cfg['cycle_time_secs'] as num?)?.toDouble();
+    if (s == null) return 'Set return time before starting';
     final m = (s / 60).floor();
     final sec = (s % 60).round();
     return '${s.toInt()} s (${m}m ${sec}s)';

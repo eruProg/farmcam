@@ -1,5 +1,8 @@
 # Automatic HDMI monitoring display
 
+> **Scan timing update:** the Pi now boots idle and requires an explicit start from the phone. The alternating route and user-defined return time replace the previous fixed 648-second cycle. See [Adjustable scan timing](SCAN_TIMING.md) for the current startup and acceptance steps.
+
+
 FarmCam can open a read-only monitoring screen automatically on the Pi desktop. The display starts independently of the detection server and shows **Waiting for the system to start…** until the backend responds. It keeps the live camera, four station summaries, scan/countdown, recent confirmed detections, and equipment status on one screen. No mouse, keyboard, or touch input is needed during normal operation.
 
 ## Connect and install
@@ -99,7 +102,7 @@ Connected-hardware acceptance remains pending:
 - Stop/restart detection, disconnect/reconnect the camera, and restart the browser/display service. Confirm frozen frames are covered and recovery requires no clicks.
 - Run without Wi-Fi/internet; local camera, station results, and history must continue. Equipment/SMS connectivity depends on the actual ESP32 network.
 - Leave the monitor on beyond its configured idle timeout and confirm it does not blank. Check cold boot, monitor power cycling, native resolution, readable text, and no scrolling.
-- Measure inference-frame throughput and CPU/memory over a full 333-second cycle without the kiosk, then repeat with it. Record both values and investigate meaningful regression before deployment.
+- Measure inference-frame throughput and CPU/memory over a full 648-second cycle without the kiosk, then repeat with it. Record both values and investigate meaningful regression before deployment.
 - Confirm the phone app remains usable simultaneously and run the existing pump-release/heartbeat and buzzer acceptance checks.
 
 No Android APK or ESP32 firmware update is needed for this display feature. Deploy the updated Pi source and run the installer on the actual Pi; local development does not install services on your hardware.

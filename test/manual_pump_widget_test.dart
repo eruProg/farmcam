@@ -22,14 +22,14 @@ void main() {
           home: DashboardScreen(rpiIp: '192.0.2.1'),
         ));
         await tester.pump();
-        final button = find.text('Hold to Spray Pesticide');
+        final button = find.text('Manual Pump');
         await tester.ensureVisible(button);
         await tester.pump();
         final gesture = await tester.startGesture(tester.getCenter(button));
         await tester.pump(const Duration(milliseconds: 600));
         expect(commands, ['hold']);
-        expect(find.text('Connecting to pump…'), findsOneWidget);
-        expect(find.text('SPRAYING — Release to Stop'), findsNothing);
+        expect(find.text('Connecting…'), findsOneWidget);
+        expect(find.text('SPRAYING — Stop'), findsNothing);
 
         if (releaseBeforeReply) {
           await gesture.up();
@@ -39,7 +39,7 @@ void main() {
         hold.complete(http.Response('{"ok":true,"active":true}', 200));
         await tester.pump();
         if (!releaseBeforeReply) {
-          expect(find.text('SPRAYING — Release to Stop'), findsOneWidget);
+          expect(find.text('SPRAYING — Stop'), findsOneWidget);
           await tester.pump(const Duration(milliseconds: 600));
           expect(commands, contains('heartbeat'));
           await gesture.up();
@@ -47,7 +47,7 @@ void main() {
         }
         expect(commands.last, 'release');
         expect(commands.where((c) => c == 'release'), hasLength(1));
-        expect(find.text('SPRAYING — Release to Stop'), findsNothing);
+        expect(find.text('SPRAYING — Stop'), findsNothing);
         await tester.pumpWidget(const SizedBox());
         await tester.pump(const Duration(seconds: 3));
       },

@@ -21,7 +21,7 @@ class ScanStateModel {
     if (received < _lastResponse) return false;
     final server = (data['server_time'] as num).toDouble();
     final sample = server - (sent + received) / 2;
-    final restarted = server < _lastServer;
+    final restarted = server < _lastServer || data['run_id'] != state['run_id'];
     _offset =
         _offset == null || restarted ? sample : 0.2 * sample + 0.8 * _offset!;
     _lastServer = server;

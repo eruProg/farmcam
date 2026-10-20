@@ -1,3 +1,4 @@
+﻿import '../widgets/scan_timing_card.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -6,8 +7,6 @@ import 'package:image_picker/image_picker.dart';
 import '../data/app_state.dart';
 import '../services/api_service.dart';
 import '../widgets/lettuce_card.dart';
-import '../widgets/mjpeg_viewer.dart';
-import '../widgets/scan_status_card.dart';
 import '../widgets/cooldown_chip.dart';
 import 'about_screen.dart';
 import 'lettuce_detail_screen.dart';
@@ -23,7 +22,6 @@ const _green = Color(0xFF16A34A);
 const _amber = Color(0xFFD97706);
 const _red = Color(0xFFDC2626);
 const _redBg = Color(0xFFFEE2E2);
-const _zinc100 = Color(0xFFF4F4F5);
 const _blue = Color(0xFF2563EB);
 const _blueBg = Color(0xFFEFF6FF);
 // ─────────────────────────────────────────────────────────────────
@@ -49,7 +47,6 @@ class _DashboardScreenState extends State<DashboardScreen>
   late final AppState _appState;
   late final ApiService _api;
 
-  bool _showStream = true;
   bool _pumpHeld = false;
   bool _pumpStarting = false;
   bool _pumpStopping = false;
@@ -65,6 +62,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _buzzerMuted = false;
   bool _buzzerUpdating = false;
   bool _cooldownsAvailable = false;
+  bool _sendingSms = false;
 
   @override
   void initState() {
@@ -203,6 +201,112 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (!result.ok) _showPumpError(result.error!);
   }
 
+  Future<void> _onManualPumpTap() async {
+    if (widget.demoMode) {
+      setState(() => _pumpConfirmed = !_pumpConfirmed);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_pumpConfirmed
+              ? 'Demo: Manual Pump Started'
+              : 'Demo: Manual Pump Stopped'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+      return;
+    }
+    if (_pumpHeld || _pumpConfirmed) {
+      await _stopPump();
+    } else {
+      setState(() {
+        _pumpStarting = true;
+      });
+      final result = await _api.triggerPump();
+      final ok = result.ok;
+      if (!mounted) return;
+      setState(() {
+        _pumpStarting = false;
+        if (ok) {
+          _pumpConfirmed = true;
+          _appState.pumpActive = true;
+        }
+      });
+      if (!ok) {
+        _showPumpError(result.error ?? 'Failed to trigger manual pump.');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Manual Spray Triggered (2.5s) - Or hold button for continuous spray'),
+              duration: Duration(seconds: 2)),
+        );
+        Future.delayed(const Duration(milliseconds: 3000), () {
+          if (mounted && !_pumpHeld) {
+            setState(() {
+              _pumpConfirmed = false;
+              _appState.pumpActive = false;
+            });
+          }
+        });
+      }
+    }
+  }
+
+  Future<void> _onSendSmsTap() async {
+    if (_sendingSms) return;
+    if (widget.demoMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('Demo: Alert SMS sent successfully to registered farmer'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    if (_smsCooldownRemaining > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              'SMS cooldown active (${_smsCooldownRemaining.round()}s remaining)'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    setState(() => _sendingSms = true);
+    try {
+      final res = await _api.testSms();
+      if (!mounted) return;
+      if (res['ok'] == true) {
+        final to = res['to'] ?? 'farmer';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ Alert SMS dispatched to $to'),
+            backgroundColor: _green,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(res['error']?.toString() ?? 'Failed to send SMS'),
+            backgroundColor: _red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Cannot connect to Pi server for SMS'),
+            backgroundColor: _red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sendingSms = false);
+    }
+  }
+
   // ─── Image picker detection ────────────────────────────────────
 
   Future<void> _pickAndDetect() async {
@@ -297,7 +401,6 @@ class _DashboardScreenState extends State<DashboardScreen>
       builder: (context, child) {
         final stations = _appState.stations;
         final alertCount = _appState.alertCount;
-        final streamUrl = 'http://${widget.rpiIp}:${widget.rpiPort}/api/stream';
 
         // Summary stats
         double maxFungusCov = 0;
@@ -328,56 +431,104 @@ class _DashboardScreenState extends State<DashboardScreen>
                               fontWeight: FontWeight.w700,
                               color: _fg,
                               letterSpacing: -.7)),
-                      Wrap(spacing: 4, children: [
-                        if (widget.demoMode) const Chip(label: Text('Demo')),
-                        if (!widget.demoMode)
-                          IconButton(
-                              tooltip: _buzzerMuted
-                                  ? 'Unmute buzzer'
-                                  : 'Mute buzzer',
-                              icon: Icon(_buzzerMuted
-                                  ? Icons.volume_off_outlined
-                                  : Icons.volume_up_outlined),
-                              onPressed: _buzzerUpdating
-                                  ? null
-                                  : () async {
-                                      final old = _buzzerMuted;
-                                      setState(() {
-                                        _buzzerMuted = !old;
-                                        _buzzerUpdating = true;
-                                      });
-                                      final ok = await _api.setBuzzerMute(!old);
-                                      if (!mounted) return;
-                                      setState(() => _buzzerUpdating = false);
-                                      if (!ok) {
-                                        setState(() => _buzzerMuted = old);
-                                        _showPumpError(
-                                            'Buzzer change was not confirmed');
-                                      }
-                                    }),
-                        if (!widget.demoMode)
-                          IconButton(
-                              tooltip: 'Detect photo',
-                              icon: const Icon(
-                                  Icons.add_photo_alternate_outlined),
-                              onPressed: _pickAndDetect),
-                        IconButton(
-                            tooltip: 'Detection history',
-                            icon: const Icon(Icons.list_alt_rounded),
-                            onPressed: () => Navigator.of(context).push(
-                                MaterialPageRoute(
-                                    builder: (_) => LogsScreen(api: _api)))),
-                        IconButton(
-                            tooltip: 'System overview',
-                            icon: const Icon(Icons.info_outline_rounded),
-                            onPressed: () => Navigator.of(context).push(
-                                MaterialPageRoute(
-                                    builder: (_) => AboutScreen(api: _api)))),
-                      ]),
+                      Wrap(
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 6,
+                          children: [
+                            CooldownChip(
+                              label: 'Pump',
+                              compact: true,
+                              available: widget.demoMode || _cooldownsAvailable,
+                              remainingS: _pumpCooldownRemaining,
+                              totalS: _pumpCooldownTotal,
+                            ),
+                            CooldownChip(
+                              label: 'SMS',
+                              compact: true,
+                              available: widget.demoMode || _cooldownsAvailable,
+                              remainingS: _smsCooldownRemaining,
+                              totalS: _smsCooldownTotal,
+                            ),
+                            if (widget.demoMode)
+                              const Chip(label: Text('Demo')),
+                            if (!widget.demoMode && !_appState.isConnected)
+                              const Chip(label: Text('Disconnected')),
+                            if (!widget.demoMode)
+                              IconButton(
+                                  tooltip: _buzzerMuted
+                                      ? 'Unmute buzzer'
+                                      : 'Mute buzzer',
+                                  icon: Icon(_buzzerMuted
+                                      ? Icons.volume_off_outlined
+                                      : Icons.volume_up_outlined),
+                                  onPressed: _buzzerUpdating
+                                      ? null
+                                      : () async {
+                                          final old = _buzzerMuted;
+                                          setState(() {
+                                            _buzzerMuted = !old;
+                                            _buzzerUpdating = true;
+                                          });
+                                          final ok =
+                                              await _api.setBuzzerMute(!old);
+                                          if (!mounted) return;
+                                          setState(
+                                              () => _buzzerUpdating = false);
+                                          if (!ok) {
+                                            setState(() => _buzzerMuted = old);
+                                            _showPumpError(
+                                                'Buzzer change was not confirmed');
+                                          }
+                                        }),
+                            if (!widget.demoMode)
+                              IconButton(
+                                  tooltip: 'Detect photo',
+                                  icon: const Icon(
+                                      Icons.add_photo_alternate_outlined),
+                                  onPressed: _pickAndDetect),
+                            IconButton(
+                                tooltip: 'Detection history',
+                                icon: const Icon(Icons.list_alt_rounded),
+                                onPressed: () => Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                        builder: (_) =>
+                                            LogsScreen(api: _api)))),
+                            IconButton(
+                                tooltip: 'System overview',
+                                icon: const Icon(Icons.info_outline_rounded),
+                                onPressed: () => Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                        builder: (_) =>
+                                            AboutScreen(api: _api)))),
+                          ]),
                     ],
                   ),
                 ),
 
+                if (!widget.demoMode)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.timer_outlined),
+                      label: const Text('Scan timing / Start / Stop'),
+                      onPressed: () => showModalBottomSheet<void>(
+                        context: context,
+                        isScrollControlled: true,
+                        useSafeArea: true,
+                        builder: (context) => FractionallySizedBox(
+                            heightFactor: .9,
+                            child: SingleChildScrollView(
+                                padding: EdgeInsets.fromLTRB(
+                                    16,
+                                    16,
+                                    16,
+                                    16 +
+                                        MediaQuery.viewInsetsOf(context)
+                                            .bottom),
+                                child: ScanTimingCard(api: _api))),
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 14),
 
                 // ── Alert banner
@@ -390,7 +541,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     decoration: BoxDecoration(
                         color: _redBg,
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: _red.withValues(alpha: 0.3))),
+                        border: Border.all(color: _red.withOpacity(0.3))),
                     child: Row(children: [
                       const Icon(Icons.warning_rounded, size: 14, color: _red),
                       const SizedBox(width: 8),
@@ -415,8 +566,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     decoration: BoxDecoration(
                         color: _blueBg,
                         borderRadius: BorderRadius.circular(10),
-                        border:
-                            Border.all(color: _blue.withValues(alpha: 0.3))),
+                        border: Border.all(color: _blue.withOpacity(0.3))),
                     child: Row(children: [
                       const Icon(Icons.water_drop, size: 14, color: _blue),
                       const SizedBox(width: 8),
@@ -432,181 +582,135 @@ class _DashboardScreenState extends State<DashboardScreen>
                     ]),
                   ),
 
-                // ── Live camera stream
-                Container(
-                  key: const ValueKey('live_stream_container'),
-                  margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                  clipBehavior: Clip.antiAlias,
-                  decoration: BoxDecoration(
-                    color: _card,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: _border),
-                  ),
-                  child: Column(
+                // ── Action Buttons Row (Manual Pump + Send SMS)
+                Padding(
+                  key: const ValueKey('action_buttons_row'),
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                  child: Row(
                     children: [
-                      GestureDetector(
-                        onTap: () => setState(() => _showStream = !_showStream),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 10),
-                          color: _card,
-                          child: Row(children: [
-                            Container(
-                                width: 8,
-                                height: 8,
-                                decoration: const BoxDecoration(
-                                    color: _green, shape: BoxShape.circle)),
-                            const SizedBox(width: 8),
-                            const Text('Live Camera Feed',
-                                style: TextStyle(
-                                    color: _fg,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600)),
-                            const Spacer(),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 2),
-                              decoration: BoxDecoration(
-                                  color: _zinc100,
-                                  borderRadius: BorderRadius.circular(6)),
-                              child: Text(widget.demoMode ? 'DEMO' : 'LIVE',
-                                  style: const TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w700,
-                                      color: _muted)),
+                      // Manual Pump Button
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: _onManualPumpTap,
+                          onLongPressStart: (_) => _onPumpPressStart(),
+                          onLongPressEnd: (_) => _onPumpPressEnd(),
+                          onLongPressCancel: _onPumpPressEnd,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 150),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            decoration: BoxDecoration(
+                              color:
+                                  (_pumpHeld || _pumpConfirmed) ? _blue : _card,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: (_pumpHeld || _pumpConfirmed)
+                                    ? _blue
+                                    : _border,
+                                width: (_pumpHeld || _pumpConfirmed) ? 2 : 1,
+                              ),
+                              boxShadow: (_pumpHeld || _pumpConfirmed)
+                                  ? [
+                                      BoxShadow(
+                                          color: _blue.withOpacity(0.25),
+                                          blurRadius: 12,
+                                          spreadRadius: 1)
+                                    ]
+                                  : null,
                             ),
-                            const SizedBox(width: 6),
-                            Icon(
-                                _showStream
-                                    ? Icons.expand_less_rounded
-                                    : Icons.expand_more_rounded,
-                                size: 18,
-                                color: _muted),
-                          ]),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  (_pumpHeld || _pumpConfirmed)
+                                      ? Icons.water_drop
+                                      : Icons.water_drop_outlined,
+                                  size: 18,
+                                  color: (_pumpHeld || _pumpConfirmed)
+                                      ? Colors.white
+                                      : _blue,
+                                ),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    _pumpStarting
+                                        ? 'Connecting…'
+                                        : _pumpStopping
+                                            ? 'Stopping…'
+                                            : (_pumpConfirmed || _pumpHeld)
+                                                ? 'SPRAYING — Stop'
+                                                : 'Manual Pump',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: (_pumpHeld || _pumpConfirmed)
+                                          ? Colors.white
+                                          : _blue,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
-                      if (_showStream)
-                        SizedBox(
-                          height:
-                              ((MediaQuery.sizeOf(context).width - 40) * .75)
-                                  .clamp(180.0, 420.0),
-                          child: widget.demoMode
-                              ? Container(
-                                  color: const Color(0xFF18181B),
-                                  child: const Center(
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.videocam_outlined,
-                                            size: 40, color: Color(0xFF71717A)),
-                                        SizedBox(height: 8),
-                                        Text('Camera Feed (Demo Mode)',
-                                            style: TextStyle(
-                                                color: Color(0xFFA1A1AA),
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w500)),
-                                      ],
+                      const SizedBox(width: 10),
+                      // Send SMS Button
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: _sendingSms ? null : _onSendSmsTap,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 150),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            decoration: BoxDecoration(
+                              color:
+                                  _sendingSms ? _green.withOpacity(0.1) : _card,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: _smsCooldownRemaining > 0
+                                    ? _border
+                                    : _green,
+                                width: 1,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  _sendingSms
+                                      ? Icons.hourglass_top_rounded
+                                      : Icons.sms_outlined,
+                                  size: 18,
+                                  color: _smsCooldownRemaining > 0
+                                      ? _muted
+                                      : _green,
+                                ),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    _sendingSms
+                                        ? 'Sending…'
+                                        : _smsCooldownRemaining > 0
+                                            ? 'SMS Cooldown'
+                                            : 'Send SMS',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: _smsCooldownRemaining > 0
+                                          ? _muted
+                                          : _green,
                                     ),
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                )
-                              : MjpegViewer(
-                                  key: const ValueKey('mjpeg_viewer'),
-                                  streamUrl: streamUrl),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
+                      ),
                     ],
                   ),
                 ),
-
-                // ── Manual Pump Button (hold-to-spray)
-                if (!widget.demoMode)
-                  Padding(
-                    key: const ValueKey('pump_button'),
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                    child: GestureDetector(
-                      onLongPressStart: (_) => _onPumpPressStart(),
-                      onLongPressEnd: (_) => _onPumpPressEnd(),
-                      onLongPressCancel: _onPumpPressEnd,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        decoration: BoxDecoration(
-                          color: _pumpHeld ? _blue : _card,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: _pumpHeld ? _blue : _border,
-                            width: _pumpHeld ? 2 : 1,
-                          ),
-                          boxShadow: _pumpHeld
-                              ? [
-                                  BoxShadow(
-                                      color: _blue.withValues(alpha: 0.25),
-                                      blurRadius: 12,
-                                      spreadRadius: 1)
-                                ]
-                              : null,
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              _pumpHeld
-                                  ? Icons.water_drop
-                                  : Icons.water_drop_outlined,
-                              size: 18,
-                              color: _pumpHeld ? Colors.white : _blue,
-                            ),
-                            const SizedBox(width: 8),
-                            Flexible(
-                                child: Text(
-                              _pumpStarting
-                                  ? 'Connecting to pump…'
-                                  : _pumpStopping
-                                      ? 'Stopping pump…'
-                                      : _pumpConfirmed
-                                          ? 'SPRAYING — Release to Stop'
-                                          : 'Hold to Spray Pesticide',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                                color: _pumpHeld ? Colors.white : _blue,
-                              ),
-                            )),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-
-                // ── Scan status card
-                ScanStatusCard(
-                  key: const ValueKey('scan_status_card'),
-                  api: _api,
-                  demoMode: widget.demoMode,
-                ),
-
-                // ── Cooldown chips row
-                if (!widget.demoMode)
-                  Padding(
-                    key: const ValueKey('cooldown_row'),
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-                    child: Row(
-                      children: [
-                        CooldownChip(
-                          label: 'Pump',
-                          available: widget.demoMode || _cooldownsAvailable,
-                          remainingS: _pumpCooldownRemaining,
-                          totalS: _pumpCooldownTotal,
-                        ),
-                        const SizedBox(width: 8),
-                        CooldownChip(
-                          label: 'SMS',
-                          available: widget.demoMode || _cooldownsAvailable,
-                          remainingS: _smsCooldownRemaining,
-                          totalS: _smsCooldownTotal,
-                        ),
-                      ],
-                    ),
-                  ),
 
                 // ── Section label
                 const Padding(

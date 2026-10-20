@@ -194,7 +194,7 @@ void _yieldHttp(unsigned long ms) {
 // ─── Buzzer patterns ─────────────────────────────────────────
 void _buzz(int onMs, int offMs) {
   digitalWrite(BUZZER_PIN, HIGH); _yieldHttp(onMs);
-  digitalWrite(BUZZER_PIN, manualBuzz ? HIGH : LOW);
+  digitalWrite(BUZZER_PIN, LOW);
   if (offMs > 0) _yieldHttp(offMs);
 }
 void buzzerPest()     { LOG("BUZZ","Pattern 1: Pest");
@@ -521,11 +521,12 @@ String processCommand(String cmd) {
 
   if (cmd=="PUMP_ON") {
     relayON(); pumpActive=true; pumpOffAt=millis()+2500;
+    pendingBuzz=4;
     LOG("PUMP","ON (single 2.5 s)"); return "OK";
   }
   if (cmd=="PUMP_HOLD") {
     relayON(); pumpActive=true; pumpOffAt=millis()+4000;
-    pendingBuzz=0; manualBuzz=true; digitalWrite(BUZZER_PIN,HIGH);
+    pendingBuzz=0; manualBuzz=true;
     LOG("PUMP","HOLD"); return "OK";
   }
   if (cmd=="PUMP_HEARTBEAT") {
@@ -534,7 +535,7 @@ String processCommand(String cmd) {
   }
   if (cmd=="PUMP_OFF") {
     relayOFF(); pumpActive=false; pumpOffAt=0;
-    if(manualBuzz) buzzerOFF();
+    buzzerOFF();
     LOG("PUMP","OFF"); return "OK";
   }
 
@@ -658,13 +659,27 @@ void setup() {
 void loop() {
   serviceHardware();   // HTTP + pump WDT + WDT reset
 
+  // Manual hold reversing beep pulses
+  if (manualBuzz) {
+    static unsigned long lastManualPulse = 0;
+    static bool manualPulseState = false;
+    if (millis() - lastManualPulse >= 250) {
+      lastManualPulse = millis();
+      manualPulseState = !manualPulseState;
+      digitalWrite(BUZZER_PIN, manualPulseState ? HIGH : LOW);
+    }
+  }
+
   // Buzzer patterns
   if (pendingBuzz > 0) {
     int kind=pendingBuzz; pendingBuzz=0;
     if(kind==1) buzzerPest();
     else if(kind==2) buzzerFungus();
     else if(kind==3) buzzerCritical();
-    else if(kind==4) { LOG("BUZZ","2.5 s spray tone"); _buzz(2500,0); }
+    else if(kind==4) {
+      LOG("BUZZ","Pesticide spray warning (reversing beep)");
+      for(int i=0; i<5; i++) { _buzz(250, 250); }
+    }
   }
 
   if (simDiagnosticsPending && !pumpActive) {

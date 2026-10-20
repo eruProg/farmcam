@@ -1,5 +1,8 @@
 # FarmCam
 
+> **Scan timing update:** the Pi now boots idle and requires an explicit start from the phone. The alternating route and user-defined return time replace the previous fixed 648-second cycle. See [Adjustable scan timing](rpi_server/docs/SCAN_TIMING.md) for the current startup and acceptance steps.
+
+
 FarmCam monitors four lettuce stations using Raspberry Pi 5, Hailo inference, an ESP32 hardware bridge, and a Flutter client. It retains confirmed detections across restarts, records completed upper/lower scans, and controls a timed pesticide pump, buzzer, and SIM800L notifications.
 
 ## Run the client

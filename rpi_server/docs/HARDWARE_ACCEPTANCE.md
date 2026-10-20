@@ -1,12 +1,15 @@
 # FarmCam hardware acceptance
 
+> **Scan timing update:** the Pi now boots idle and requires an explicit start from the phone. The alternating route and user-defined return time replace the previous fixed 648-second cycle. See [Adjustable scan timing](SCAN_TIMING.md) for the current startup and acceptance steps.
+
+
 These checks require the actual Pi, camera, Hailo models, ESP32, pump, buzzer, and SIM800L. Automated tests do not establish physical operation.
 
 For the HDMI monitor, also complete the boot, offline operation, recovery, blanking, and inference-performance checks in [HDMI_DISPLAY.md](HDMI_DISPLAY.md). Those physical display checks are pending until performed on the connected rig.
 
 - Back up the existing databases and service environment. Install the updated client/server together and flash the canonical ESP32 sketch with the correct network settings.
 - Verify the Pi can reach ESP32 `/status` and `/sms/status?id=probe`; record the boot ID. Confirm GPIO 26 drives the buzzer and GPIO 27 drives the relay.
-- Start with the camera at station 1 upper position. Observe a full four-station cycle: 30-second upper/lower windows, separate five-second down/up movement, one-second settling, ten-second moves, and the fifteen-second return after station 4. Record the actual nominal 333-second cycle and mechanical alignment.
+- Start with the camera at station 1 upper position. Observe a full four-station cycle: 60-second upper/lower windows, separate 15-second down/up movement, one-second settling, ten-second inter-station moves, and the ten-second return after station 4. Record the actual nominal 648-second cycle and mechanical alignment.
 - Move a target during transit/settling. Confirm no new detections or automatic sprays originate from those frames. Confirm a frame finishing inference after its window is rejected.
 - Present a real target at station 1, then scan station 2. Confirm station 1 remains recorded. Complete a clean rescan of station 1 and confirm only its corresponding position is resolved.
 - Disconnect the camera mid-window and restart the service. Confirm incomplete scans are aborted and prior confirmed tracks remain. Confirm pump/SMS cooldowns retain their remaining time after restart.

@@ -1,4 +1,4 @@
-"""
+﻿"""
 FarmCam - RPi5 Server (FIXED Dual-Hailo Version)
 ================================================
 Fixes applied:
@@ -38,6 +38,8 @@ import uvicorn
 
 # New subsystem coordinator (non-frozen; wires after startup)
 import coordinator
+from inference_diagnostics import InferenceDiagnostics, model_identity
+inference_diagnostics = InferenceDiagnostics()
 import config
 import sys
 
@@ -174,13 +176,13 @@ except Exception as e:
 # Configuration
 # ---------------------------------------------------------------------------
 SERVER_PORT = 8000
-SERVER_BUILD = "2026-10-16-farmcam-complete-1"
+SERVER_BUILD = "2026-10-17-display-relay-diagnostics-1"
 VIEWER_PORT = 8080
 BUZZER_PIN = 17
 PUMP_PIN = 27
 PUMP_DURATION = 3.0
 
-ESP32_IP = os.environ.get("FARMCAM_ESP32_IP", "10.244.166.161")
+ESP32_IP = os.environ.get("FARMCAM_ESP32_IP", "10.229.135.161")
 ESP32_PORT = 80
 FARMER_PHONE = config.FARMER_PHONE
 SIM800L_PHONE = config.SIM_PHONE
@@ -215,12 +217,8 @@ DETECT_CLASS_NAMES = ["whiteflies", "worm"]
 CLASS_NAMES = ["fungus", "whiteflies", "worm"]
 NUM_CLASSES = 3
 
-# How HEFs share the Hailo chip (only one network really fits well with best.hef)
-#   "split"     — load ONLY best_seg.hef + best_detect.hef (skip best.hef)
-#   "combined"  — load ONLY best.hef
-#   "rotate"    — one HEF at a time: DETECT_A=DET, DETECT_B=SEG, next station=COMB
-#   "all"       — try to keep all 3 configured (usually fails after best.hef)
-HAILO_MODE = "split"    # both SEG + DET loaded on chip simultaneously
+# This deployment requires both specialized networks; no combined fallback.
+HAILO_MODE = "split"
 
 TARGET_SSID = "FarmCam"
 TARGET_PASS = "farmcam1"
@@ -234,7 +232,7 @@ REG_MAX = 16
 MIN_BOX_AREA = 150                   # was 8 (~3x3px) — let single-pixel noise register as a "pest"
 # Model-space pixels; small insects/lesions must not inherit the worm size gate.
 # Starting values to validate on real camera images, not measured accuracy claims.
-PER_CLASS_MIN_BOX_AREA = {"whiteflies": 16, "whitefly": 16, "fungus": 25}
+PER_CLASS_MIN_BOX_AREA = {"whiteflies": 16, "whitefly": 16, "worm": 25, "fungus": 25}
 MIN_MASK_AREA_PX = 4                 # proto pixels (4 pixels = 64 image pixels at 640/160)
 MIN_MASK_FILL_RATIO = 0.05           # total mask pixels / box-crop pixels — rejects near-empty/speckle masks
 MAX_DETECTIONS_PER_FRAME = 30
@@ -681,7 +679,6 @@ def _configure_one_hef(label, path, class_names):
 
 def _hef_specs():
     return [
-        ("COMB", "best.hef", CLASS_NAMES),
         ("SEG", "best_seg.hef", SEG_CLASS_NAMES),
         ("DET", "best_detect.hef", DETECT_CLASS_NAMES),
     ]
@@ -738,6 +735,8 @@ def hailo_open_device():
 def hailo_load_labels(labels):
     """Release chip, then configure only the requested labels from catalog."""
     global hailo_models
+    if set(labels) != {"DET", "SEG"}:
+        raise ValueError("FarmCam requires both DET and SEG; combined/single-model mode is disabled")
     want = [item for item in hailo_catalog if item[0] in labels]
     if len(want) != len(set(labels)):
         print(f"⚠ No catalog entries for {labels}")
@@ -750,6 +749,7 @@ def hailo_load_labels(labels):
         for label, path, classes in want:
             entry = _configure_one_hef(label, path, classes)
             if entry is not None:
+                entry['identity'] = model_identity(entry)
                 hailo_models.append(entry)
         if len(hailo_models) != len(want):
             print(f"❌ Requested {labels}, but only {[m['label'] for m in hailo_models]} loaded")
@@ -761,64 +761,19 @@ def hailo_load_labels(labels):
 
 
 def init_hailo_models():
-    """Load HEFs according to HAILO_MODE (split / combined / rotate / all)."""
-    global hailo_catalog, hailo_models, model
-
-    hailo_models = []
+    """Require the specialized pair, with no silent substitution."""
+    global hailo_catalog
+    hailo_release_device()
     hailo_catalog = []
-    _set_loaded_flags()
-
     if not HAS_HAILO:
-        print("❌ Hailo platform not available")
-        return
-
-    print("\n" + "=" * 60)
-    print(f"🧠 Loading Hailo models  mode={HAILO_MODE}")
-    print("=" * 60)
-
+        raise RuntimeError("Hailo platform unavailable; DET and SEG are required")
     hailo_catalog = _discover_hefs()
-    if not hailo_catalog:
-        print("❌ No HEF models found in models/")
-        return
+    if {entry[0] for entry in hailo_catalog} != {"DET", "SEG"}:
+        raise RuntimeError("Both best_detect.hef and best_seg.hef are required")
+    if not hailo_load_labels(["DET", "SEG"]):
+        raise RuntimeError("Could not load both DET and SEG; no combined-model fallback")
+    print("Hailo ready: DET + SEG (required pair)")
 
-    have = {lab for lab, _, _ in hailo_catalog}
-    mode = (HAILO_MODE or "auto").lower()
-
-    if mode == "auto":
-        # Two specialized HEFs cannot share the chip with best.hef.
-        # Prefer the split pair when both exist; otherwise combined.
-        mode = "split" if ("SEG" in have and "DET" in have) else "combined"
-        print(f"   auto → {mode}")
-
-    if mode == "combined":
-        ok = hailo_load_labels(["COMB"]) or hailo_load_labels(["DET", "SEG"])
-    elif mode == "split":
-        ok = hailo_load_labels(["DET", "SEG"])
-        if not ok:
-            print("⚠ split pair failed — falling back to best.hef")
-            ok = hailo_load_labels(["COMB"])
-    elif mode in ("rotate", "manual"):
-        first = "COMB" if "COMB" in have else ("DET" if "DET" in have else "SEG")
-        ok = hailo_load_labels([first])
-    else:  # "all" — try everything on one device (often only first succeeds)
-        if not hailo_open_device():
-            return
-        hailo_models = []
-        for label, path, classes in hailo_catalog:
-            entry = _configure_one_hef(label, path, classes)
-            if entry is not None:
-                hailo_models.append(entry)
-        _set_loaded_flags()
-        ok = bool(hailo_models)
-
-    if ok:
-        print(f"✅ Hailo ready: {[m['label'] for m in hailo_models]}  (mode={mode})")
-        if mode == "rotate":
-            print("   rotate plan: DETECT_A → DET, DETECT_B → SEG, next plant → COMB")
-        if mode == "split":
-            print("   best.hef is NOT loaded so best_seg + best_detect can share the chip")
-    else:
-        print("❌ No models loaded successfully")
 
 def init_pt_model():
     global pt_model
@@ -1660,6 +1615,7 @@ def generate_mjpeg(max_width=None, fps=None, show_diagnostics=True):
     while True:
         with frame_lock:
             frame = current_frame.copy() if current_frame is not None else None
+            captured_at = frame_timestamp if frame is not None else 0.0
         if frame is not None:
             # HARDENING: previously nothing here was guarded. One malformed
             # detection (a degenerate polygon, an out-of-range box) throwing
@@ -1670,7 +1626,8 @@ def generate_mjpeg(max_width=None, fps=None, show_diagnostics=True):
             # scratch. Now a bad frame just gets skipped instead of taking
             # the whole stream down.
             try:
-                for item in list(display_detections):
+                active_dets = list(display_detections) if display_detections else list(latest_detections)
+                for item in active_dets:
                     try:
                         x1, y1, x2, y2, label, color = item[:6]
                         poly = item[6] if len(item) > 6 else None
@@ -1728,7 +1685,7 @@ def generate_mjpeg(max_width=None, fps=None, show_diagnostics=True):
                         continue
                 hud = (
                     f"NPU C:{int(comb_model_loaded)} S:{int(seg_model_loaded)} D:{int(det_model_loaded)} "
-                    f"objs:{len(display_detections)} max:{_infer_debug.get('max_score', 0):.2f} "
+                    f"objs:{len(display_detections) if display_detections else len(latest_detections)} max:{_infer_debug.get('max_score', 0):.2f} "
                     f"{current_state} S{active_station_id}"
                 )
                 if show_diagnostics:
@@ -1737,7 +1694,8 @@ def generate_mjpeg(max_width=None, fps=None, show_diagnostics=True):
                 if max_width and frame.shape[1] > max_width:
                     frame = cv2.resize(frame, (max_width, round(frame.shape[0] * max_width / frame.shape[1])))
                 _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\nX-Capture-Monotonic: ' +
+                       str(captured_at).encode('ascii') + b'\r\n\r\n' + jpeg.tobytes() + b'\r\n')
             except Exception as e:
                 print(f"⚠️  Skipped one bad video frame instead of dropping the stream: {e}")
         else:
@@ -1748,7 +1706,8 @@ def generate_mjpeg(max_width=None, fps=None, show_diagnostics=True):
                 if max_width and blank.shape[1] > max_width:
                     blank = cv2.resize(blank, (max_width, round(blank.shape[0] * max_width / blank.shape[1])))
                 _, jpeg = cv2.imencode('.jpg', blank)
-                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\nX-Capture-Monotonic: ' +
+                       str(captured_at).encode('ascii') + b'\r\n\r\n' + jpeg.tobytes() + b'\r\n')
             except Exception as e:
                 print(f"⚠️  Skipped blank placeholder frame: {e}")
         time.sleep(1.0 / fps if fps else 0.066)
@@ -1894,18 +1853,33 @@ def detect_loop():
                 time.sleep(0.1)
                 continue
 
-            if not coordinator.accepts(meta):
+            last_frame_sequence = sequence
+
+            inference_started = time.monotonic()
+            before_verification = []
+            try:
+                before_verification = detect_frame(frame)
+            except Exception as exc:
+                _infer_debug["last_err"] = f"Inference: {exc}"
                 time.sleep(DETECTION_INTERVAL)
                 continue
 
-            last_frame_sequence = sequence
+            is_scanning = coordinator.accepts(meta)
+            if is_scanning:
+                try:
+                    dets = coordinator.handle_frame(frame, before_verification, meta)
+                except Exception as exc:
+                    inference_diagnostics.record(sequence, meta, inference_started,
+                        before_verification, None, _infer_debug, error=str(exc))
+                    raise
+                inference_diagnostics.record(sequence, meta, inference_started,
+                    before_verification, dets, _infer_debug)
+                display_detections = coordinator.overlay(dets if (dets is not None and len(dets) > 0) else before_verification)
+            else:
+                dets = None
+                display_detections = coordinator.overlay(before_verification)
 
-            dets = detect_frame(frame)
-            dets = coordinator.handle_frame(frame, dets, meta)
-            if dets is None:
-                display_detections = []
-                continue
-            display_detections = coordinator.overlay(dets)
+            eval_dets = dets if (dets is not None and len(dets) > 0) else before_verification
 
             pest_count = 0
             fungus_cov = 0.0
@@ -1914,7 +1888,7 @@ def detect_loop():
             worms = 0
             frame_dets = []
             total_image_px = max(1, frame.shape[0] * frame.shape[1])
-            for det in dets:
+            for det in eval_dets:
                 x1, y1, x2, y2, name, conf = det[:6]
                 poly = det[6] if len(det) > 6 else None
                 mask_px = det[7] if len(det) > 7 else 0
@@ -1954,7 +1928,13 @@ def detect_loop():
 
             # Completed-window summaries remain authoritative until the rescan commits.
             # Live results are exposed separately and never clear persisted station state.
-            stations_data[meta.station]['live_detections'] = frame_dets[:12]
+            current_st = meta.station if (meta and getattr(meta, 'station', None)) else active_station_id
+            if current_st in stations_data:
+                stations_data[current_st]['live_detections'] = frame_dets[:12]
+
+            if not is_scanning:
+                time.sleep(DETECTION_INTERVAL)
+                continue
 
             # Spray immediately once 2 pest/fungus boxes are in this frame,
             # OR the moment EITHER track independently reads "high" (e.g. a
@@ -2030,23 +2010,40 @@ def _buzzer_off():
     threading.Thread(target=lambda: esp32_cmd("BUZZ_OFF"), daemon=True).start()
 
 
-def esp32_cmd(command, timeout=3.0):
+esp32_last_ok = 0.0     # time of last acknowledged ESP32 command
+esp32_last_err = ""     # last ESP32 failure reason (for /api/pump/status)
+
+
+def esp32_cmd(command, timeout=3.0, retries=2):
     """POST a text command to the ESP32 /cmd endpoint (non-blocking jobs on ESP)."""
+    global esp32_last_ok, esp32_last_err
     url = f"http://{ESP32_IP}:{ESP32_PORT}/cmd"
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            url, data=command.encode("utf-8"),
-            headers={"Content-Type": "text/plain"}, method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", errors="ignore")
-            print(f"📡 ESP32 {command[:48]} → {body}")
-            body = body.strip()
-            return body if body == "OK" or body.startswith("OK:") else None
-    except Exception as e:
-        print(f"⚠ ESP32 '{command[:32]}' failed ({url}): {e}")
-        return None
+    for attempt in range(retries + 1):
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                url, data=command.encode("utf-8"),
+                headers={"Content-Type": "text/plain"}, method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8", errors="ignore")
+                print(f"📡 ESP32 {command[:48]} → {body}")
+                body = body.strip()
+                if body == "OK" or body.startswith("OK:"):
+                    esp32_last_ok = time.time()
+                    return body
+                esp32_last_err = f"unexpected reply: {body[:40]!r}"
+        except Exception as e:
+            esp32_last_err = str(e)
+            if attempt < retries:
+                time.sleep(0.08)
+            else:
+                print(f"⚠️ ESP32 '{command[:32]}' failed ({url}): {e}")
+    return None
+
+
+
+
 
 
 def esp32_cmd_async(command):
@@ -2312,6 +2309,8 @@ async def api_system():
         "buzzer_muted": (coordinator.get_shared_state()["buzzer_scheduler"].is_muted
                          if coordinator.get_shared_state()["buzzer_scheduler"] else True),
         "scan_state": coordinator.scan_state(),
+        "cooldowns": (coordinator.get_shared_state()["cooldown_mgr"].status_dict()
+                      if coordinator.get_shared_state().get("cooldown_mgr") else None),
         "subsystem_fault": coordinator.get_shared_state()["fault"],
         "stations": list(stations_data.values()),
         "state": current_state,
@@ -2334,8 +2333,8 @@ async def api_detection_debug():
         "small_object_tiles": SMALL_OBJECT_TILES,
         "confidence_thresholds": PER_CLASS_THRESHOLDS,
         "minimum_box_area": PER_CLASS_MIN_BOX_AREA,
-        "models": [{"label": m["label"], "path": m["path"], "classes": m["class_names"]}
-                   for m in hailo_models],
+        "models": [m['identity'] for m in hailo_models],
+        **inference_diagnostics.snapshot(coordinator.scan_state()),
         "class_scores": _infer_debug.get("class_scores", {}),
         "accepted_before_crop_merge": _infer_debug.get("accepted_boxes", {}),
         "confirmed": _infer_debug.get("confirmed_boxes", {}),
@@ -2356,19 +2355,13 @@ MODEL_ALIASES = {
 
 def switch_hef(name: str):
     """Manually load another HEF. Unloads the current one first."""
-    key = (name or "").strip().upper().replace(".HEF", "").replace("BEST_", "")
-    if key in ("SEG", "DETECT"):
-        labels = ["SEG"] if key == "SEG" else ["DET"]
-    else:
-        labels = MODEL_ALIASES.get(key)
-    if not labels:
-        return {"ok": False, "error": f"unknown model '{name}'", "options": list(MODEL_ALIASES)}
-    print(f"🖱  Manual HEF switch → {labels}")
-    ok = hailo_load_labels(labels)
-    if not ok and labels != ["COMB"]:
-        ok = hailo_load_labels(["COMB"])
-        return {"ok": ok, "active": [m["label"] for m in hailo_models], "note": "fallback"}
-    return {"ok": ok, "active": [m["label"] for m in hailo_models]}
+    if (name or "").strip().upper() != "SPLIT":
+        return {"ok": False, "error": "Only SPLIT (DET + SEG) is supported",
+                "active": [m["label"] for m in hailo_models]}
+    # No device swap during a running scan or inference. The required pair is
+    # already loaded at startup; a failed load requires a service restart.
+    return {"ok": {m["label"] for m in hailo_models} == {"DET", "SEG"},
+            "active": [m["label"] for m in hailo_models]}
 
 
 @app.get("/api/models")
@@ -2378,7 +2371,7 @@ async def api_models():
         "mode": HAILO_MODE,
         "available": have,
         "active": [m["label"] for m in hailo_models],
-        "buttons": ["COMB", "DET", "SEG", "SPLIT"],
+        "buttons": ["SPLIT"],
     }
 
 
@@ -2540,13 +2533,22 @@ async def api_pump_status():
         "cooldown_secs": PUMP_COOLDOWN,
         "duration": PUMP_DURATION,
         "esp32_ip": ESP32_IP,
+        "esp32_reachable": time.time() - esp32_last_ok < 10.0,
+        "esp32_last_ok": esp32_last_ok or None,
+        "esp32_last_error": esp32_last_err,
     }
 
 
 @app.post("/api/pump/trigger")
-async def api_pump_trigger():
+def api_pump_trigger():
     """One-shot pump trigger (2.5s spray at current station)."""
     sid = active_station_id
+    # Fail fast instead of reporting "accepted" when the ESP32 is offline.
+    if not pump_active and esp32_cmd("PUMP_HEARTBEAT", timeout=1.5, retries=0) is None:
+        return JSONResponse(status_code=503, content={
+            "ok": False, "active": False,
+            "error": f"ESP32 pump controller at {ESP32_IP} is not reachable. Check its IP and Wi-Fi.",
+        })
     threading.Thread(
         target=_pump_worker, args=(2.5, sid, "MANUAL_TRIGGER", True), daemon=True
     ).start()
@@ -2561,32 +2563,48 @@ def _manual_pump_watchdog(generation):
     """Auto-stop manual pump if heartbeat stops (safety), and keep ESP32 watchdog refreshed."""
     global manual_pump_on, pump_active
     last_esp_ping = time.time()
+    esp_misses = 0
     while True:
         time.sleep(0.25)
+        stop = False
         with manual_control_lock:
             if not manual_pump_on or generation != manual_pump_generation:
                 return
             now = time.time()
-            stop = now - manual_pump_heartbeat > MANUAL_PUMP_TIMEOUT
-            if not stop and now - last_esp_ping > 1.0:
-                last_esp_ping = now
-                stop = esp32_cmd("PUMP_HEARTBEAT", timeout=1.0) != "OK:alive"
-            if stop:
-                print("💧 Manual pump heartbeat/device connection lost — stopping")
+            if now - manual_pump_heartbeat > MANUAL_PUMP_TIMEOUT:
+                stop = True
+
+        # Periodically refresh ESP32 hardware watchdog (every 1.5s) OUTSIDE manual_control_lock
+        now = time.time()
+        if not stop and (now - last_esp_ping >= 1.5):
+            last_esp_ping = now
+            alive = esp32_cmd("PUMP_HEARTBEAT", timeout=1.5, retries=1)
+            # Accept OK or OK:alive from ESP32
+            if alive and ("OK" in str(alive)):
+                esp_misses = 0
+            else:
+                esp_misses += 1
+                if esp_misses >= 3:
+                    print(f"[!] ESP32 pump heartbeat unacknowledged ({esp_misses}/3) - stopping")
+                    stop = True
+
+        if stop:
+            print("[!] Manual pump heartbeat/device connection lost - stopping")
+            with manual_control_lock:
                 manual_pump_on = False
-                esp32_cmd("PUMP_OFF", timeout=2.0)
-                with pump_lock:
-                    pump_active = False
-                return
+            esp32_cmd("PUMP_OFF", timeout=2.0, retries=2)
+            with pump_lock:
+                pump_active = False
+            return
 
 
 @app.post("/api/pump/hold")
 def api_pump_hold():
     """Start pump and keep it on until /api/pump/release is called.
     The app sends heartbeats to /api/pump/heartbeat while button is held.
-    If heartbeats stop for >2s, the pump auto-stops (safety)."""
+    If heartbeats stop for >3.5s, the pump auto-stops (safety)."""
     global manual_pump_on, manual_pump_heartbeat, pump_active, _manual_pump_start_time, manual_pump_generation
-    # Sync routes run in FastAPI's thread pool so modem HTTP waits cannot
+    # Sync routes run in FastAPI thread pool so modem HTTP waits cannot
     # block incoming app heartbeats. Serialize start/stop with the watchdog.
     with manual_control_lock:
         if manual_pump_on:
@@ -2596,10 +2614,12 @@ def api_pump_hold():
             if pump_active:
                 return JSONResponse(status_code=409, content={"ok": False, "error": "Pump is already running"})
             pump_active = True
-        ok = esp32_cmd("PUMP_HOLD", timeout=2.0)
-        if ok != "OK":
+        # Keep the worst case (~4s) under the app's request timeout so the app
+        # gets this accurate ESP32 error instead of a generic timeout.
+        ok = esp32_cmd("PUMP_HOLD", timeout=1.5, retries=1)
+        if ok != "OK" and (not ok or not str(ok).startswith("OK")):
             # An acknowledgement may have been lost; cancel any accepted hold.
-            esp32_cmd("PUMP_OFF", timeout=1.0)
+            esp32_cmd("PUMP_OFF", timeout=1.0, retries=0)
             with pump_lock:
                 pump_active = False
             return JSONResponse(status_code=503, content={
@@ -2621,7 +2641,7 @@ def api_pump_hold():
             args=("MANUAL_PUMP", active_station_id, "Manual spray started via app"),
             daemon=True,
         ).start()
-    print("💧 Manual pump HOLD started")
+    print("[*] Manual pump HOLD started")
     return {"ok": True, "active": True}
 
 
@@ -2633,11 +2653,17 @@ def api_pump_release():
         was_on = manual_pump_on
         duration = max(0.0, time.time() - _manual_pump_start_time) if was_on else 0.0
         manual_pump_on = False
-        off = esp32_cmd("PUMP_OFF", timeout=2.0)
         with pump_lock:
             pump_active = False
-    print(f"💧 Manual pump RELEASED (ran {duration:.1f}s)")
-    if off != "OK":
+    if was_on and duration < 0.15:
+        time.sleep(0.08)
+    off = esp32_cmd("PUMP_OFF", timeout=1.5, retries=1)
+    print(f"[*] Manual pump RELEASED (ran {duration:.1f}s)")
+    if off != "OK" and (not off or not str(off).startswith("OK")):
+        threading.Thread(
+            target=lambda: [time.sleep(0.2), esp32_cmd("PUMP_OFF", timeout=3.0, retries=3)],
+            daemon=True
+        ).start()
         return JSONResponse(status_code=503, content={
             "ok": False, "error": "Stop not acknowledged by ESP32; hardware watchdog will stop the pump.",
         })
@@ -2878,15 +2904,13 @@ def cleanup():
 def scan_phase_changed(phase, station):
     from scan_state import ScanPhase
     global _dwell_hits_peak, _dwell_sightings
-    if phase is ScanPhase.DETECT_UPPER:
+    if ((station % 2 == 1 and phase is ScanPhase.DETECT_LOWER) or
+            (station % 2 == 0 and phase is ScanPhase.DETECT_UPPER)):
         _reset_window_best()
         _dwell_hits_peak = _dwell_sightings = 0
         _sprayed_this_visit.pop(station, None)
     if phase in (ScanPhase.DETECT_UPPER, ScanPhase.DETECT_LOWER):
         temporal.buffer.clear()
-        if HAILO_MODE.lower() == 'rotate':
-            label = 'SEG' if phase is ScanPhase.DETECT_LOWER else ('COMB' if station % 2 == 0 else 'DET')
-            hailo_load_labels([label]) or hailo_load_labels(['COMB'])
 
 
 def restore_station_summaries(rows):
@@ -2931,6 +2955,13 @@ def startup():
     init_pump()
     init_db()
     coordinator.wire(sys.modules[__name__])
+
+    if getattr(config, "AUTO_START_SCAN", True):
+        try:
+            coordinator.start_scan()
+            print("ðŸš€ Autonomous scan cycle started at boot")
+        except Exception as e:
+            print(f"âš ï¸ Could not auto-start scan: {e}")
 
     cam_thread = threading.Thread(target=capture_frames, daemon=True)
     worker_threads.append(cam_thread)

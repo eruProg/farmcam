@@ -1,3 +1,4 @@
+from scan_settings import ScanSettings
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -22,7 +23,7 @@ def runtime(tmp_path, monkeypatch):
     c._scan_sm.on_phase_change(c._on_phase_change)
     c._wired = True
     c._fault = None
-    c._scan_sm.start()
+    c._scan_sm.start(ScanSettings(scan_s=30, initial_delay_s=0, return_s=10))
     yield now
     c.shutdown()
 
@@ -62,3 +63,36 @@ def test_verified_overlay_preserves_polygon_and_color_contract():
     polygon = [[1,2],[3,4],[5,6]]
     row = c.overlay([[1,2,30,40,'fungus',.9,polygon,20]])[0]
     assert row == (1,2,30,40,'fungus 0.90',(0,165,255),polygon)
+
+
+def test_control_endpoints_stop_abort_and_restart(runtime, tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from api_extensions import register_extensions
+    from scan_settings import load_settings
+    monkeypatch.setattr(c.config, 'DATA_DIR', tmp_path)
+    app = FastAPI()
+    register_extensions(app, c.get_shared_state)
+    client = TestClient(app)
+    profile = ScanSettings(return_s=14).to_dict()
+    meta = c.capture_meta(1)
+    assert client.post('/api/scan/start', json=profile).status_code == 409
+    assert not (tmp_path/'scan_settings.json').exists()
+    assert client.post('/api/scan/stop').json()['phase'] == 'IDLE'
+    assert not c.accepts(meta) and not c.automatic_ready()
+    with c._db._conn() as conn:
+        assert conn.execute('SELECT status FROM scans').fetchone()[0] == 'aborted'
+    assert client.post('/api/scan/start', json={'return_s': 2}).status_code == 422
+    started = client.post('/api/scan/start', json=profile).json()
+    assert started['phase'] == 'INITIAL_DELAY'
+    assert not c.automatic_ready()
+    assert load_settings(tmp_path/'scan_settings.json').return_s == 14
+    assert client.get('/api/scan/settings').json()['state']['run_id'] == started['run_id']
+    runtime[0] += 5
+    c.tick()
+    assert c.capture_meta(2).position == 'lower'
+    assert not c.accepts(meta)
+    assert client.post('/api/scan/stop').status_code == 200
+    monkeypatch.setattr(c, 'save_settings', Mock(side_effect=OSError('disk full')))
+    assert client.post('/api/scan/start', json=profile).status_code == 503
+    assert c.scan_state()['phase'] == 'IDLE'

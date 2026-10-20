@@ -65,7 +65,7 @@ class _LogsScreenState extends State<LogsScreen> {
     return SizedBox(
         width: 152,
         child: DropdownButtonFormField<T>(
-          initialValue: value,
+          value: value,
           isExpanded: true,
           decoration: InputDecoration(
               labelText: label,

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
@@ -20,6 +21,25 @@ class ApiService {
   // ─── Connectivity ──────────────────────────────────────────────
 
   /// Quick connectivity check.
+  Future<Map<String, dynamic>> scanRequest(String action,
+      {Map<String, dynamic>? body}) async {
+    final uri = Uri.parse('$_base/api/scan/$action');
+    final response = await (body == null
+            ? http.get(uri)
+            : http.post(uri,
+                headers: {'Content-Type': 'application/json'},
+                body: jsonEncode(body)))
+        .timeout(const Duration(seconds: 6));
+    if (response.statusCode == 404 || response.statusCode == 405) {
+      throw Exception('Update the Pi server to use adjustable scan timing.');
+    }
+    if (response.statusCode != 200) {
+      throw Exception(
+          'Scan request failed (${response.statusCode}): ${response.body}');
+    }
+    return Map<String, dynamic>.from(jsonDecode(response.body));
+  }
+
   Future<bool> ping() async {
     try {
       final resp = await http
@@ -71,6 +91,7 @@ class ApiService {
           uptime: json['uptime'] ?? '--',
           cameraActive: json['camera_active'] ?? false,
           activeStationId: json['active_station'] as int?,
+          rawJson: json is Map<String, dynamic> ? json : null,
         );
       }
     } catch (_) {}
@@ -126,23 +147,16 @@ class ApiService {
   }
 
   /// Trigger a timed pump spray (auto-detection driven).
-  Future<bool> triggerPump() async {
-    try {
-      final resp = await http
-          .post(Uri.parse('$_base/api/pump/trigger'))
-          .timeout(const Duration(seconds: 5));
-      return resp.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
-  }
+  Future<PumpCommandResult> triggerPump() => _pumpCommand('trigger');
 
   Future<PumpCommandResult> _pumpCommand(String action,
       {bool requireActive = false}) async {
+    http.Response? resp;
     try {
-      final resp = await http
+      // The Pi answers within ~4s even when the ESP32 is offline.
+      resp = await http
           .post(Uri.parse('$_base/api/pump/$action'))
-          .timeout(Duration(seconds: action == 'heartbeat' ? 2 : 6));
+          .timeout(Duration(seconds: action == 'heartbeat' ? 2 : 8));
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
       if (resp.statusCode == 200 &&
           data['ok'] == true &&
@@ -153,9 +167,15 @@ class ApiService {
           false,
           data['error']?.toString() ??
               'Pump command was not confirmed. Check the Pi-to-ESP32 connection.');
-    } catch (_) {
+    } on TimeoutException {
       return const PumpCommandResult(false,
-          'Cannot confirm the pump command. Check the Raspberry Pi connection.');
+          'Raspberry Pi did not answer in time. The ESP32 pump controller may be offline.');
+    } on FormatException {
+      return PumpCommandResult(false,
+          'Unexpected reply from the Raspberry Pi (HTTP ${resp?.statusCode}). Is the server up to date?');
+    } catch (_) {
+      return PumpCommandResult(
+          false, 'Cannot reach the Raspberry Pi at $_base. Check the Wi-Fi and IP.');
     }
   }
 

@@ -177,6 +177,7 @@ class SystemInfo {
   final bool buzzerActive;
   final bool cameraActive;
   final int? activeStationId;
+  final Map<String, dynamic>? rawJson;
 
   SystemInfo({
     this.cpuTemp = 0,
@@ -186,7 +187,10 @@ class SystemInfo {
     this.buzzerActive = false,
     this.cameraActive = false,
     this.activeStationId,
+    this.rawJson,
   });
+
+  dynamic operator [](String key) => rawJson?[key];
 
   factory SystemInfo.fromJson(Map<String, dynamic> json) {
     return SystemInfo(
@@ -197,6 +201,7 @@ class SystemInfo {
       buzzerActive: json['buzzer_active'] ?? false,
       cameraActive: json['camera_active'] ?? false,
       activeStationId: json['active_station_id'],
+      rawJson: json,
     );
   }
 }
@@ -236,7 +241,6 @@ class AppState extends ChangeNotifier {
   bool get isConnecting => _isConnecting;
   String get connectionError => _connectionError;
   bool get demoMode => _demoMode;
-  String get streamUrl => 'http://$_rpiIp:$_rpiPort/api/stream';
   String get baseUrl => 'http://$_rpiIp:$_rpiPort';
 
   int get clearCount =>

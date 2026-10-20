@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import cv2
 import config
 from verifier import DetectionVerifier, _CentroidTracker, _skin_ratio, _green_ratio
@@ -32,3 +32,17 @@ def test_temporal_gate_never_replays_absent_or_drifting_candidates(monkeypatch):
     assert len(tracker.tick([det],replace(meta,captured_at=100.1,seq=2))) == 1
     assert tracker.tick([],replace(meta,captured_at=100.2,seq=3)) == []
     assert tracker.tick([[25,10,45,30,'worm',.99]],replace(meta,captured_at=100.201,seq=4)) == []
+
+def test_worm_skin_color_is_not_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, 'REJECTED_DIR', tmp_path)
+    verifier = DetectionVerifier()
+    skin_bgr = cv2.cvtColor(np.full((100, 100, 3), (10, 110, 200), np.uint8), cv2.COLOR_HSV2BGR)
+    meta = ScanStateMachine().make_frame_meta(1)
+
+    # Whitefly crop with skin tone is rejected
+    wf_res = verifier._check_gates(10, 10, 30, 30, 'whiteflies', 0.99, skin_bgr, 100, 100, False, meta)
+    assert wf_res is not None
+
+    # Worm crop with skin tone must pass all gates
+    worm_res = verifier._check_gates(10, 10, 30, 30, 'worm', 0.99, skin_bgr, 100, 100, False, meta)
+    assert worm_res is None, f"Worm was unexpectedly rejected: {worm_res}"

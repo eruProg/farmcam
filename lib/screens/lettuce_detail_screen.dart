@@ -104,7 +104,7 @@ class _LettuceDetailScreenState extends State<LettuceDetailScreen> {
               decoration: BoxDecoration(
                   color: accentBg,
                   borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: accent.withValues(alpha: 0.3))),
+                  border: Border.all(color: accent.withOpacity(0.3))),
               child: Text(s.statusLabel,
                   style: TextStyle(
                       fontSize: 11,
@@ -309,7 +309,7 @@ class _LettuceDetailScreenState extends State<LettuceDetailScreen> {
                                   color: _redBg,
                                   borderRadius: BorderRadius.circular(6),
                                   border: Border.all(
-                                      color: _red.withValues(alpha: 0.3))),
+                                      color: _red.withOpacity(0.3))),
                               child: Text(t,
                                   style: const TextStyle(
                                       fontSize: 12,
@@ -454,7 +454,7 @@ class _DetectionRow extends StatelessWidget {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-                color: accent.withValues(alpha: 0.1),
+                color: accent.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(7)),
             child: Icon(_icon(detection.status), size: 14, color: accent),
           ),

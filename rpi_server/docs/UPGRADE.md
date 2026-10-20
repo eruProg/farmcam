@@ -1,6 +1,9 @@
 # Install the October 16 FarmCam update
 
-Update the Raspberry Pi server, ESP32 firmware, and Android app together. The nominal scan is 333 seconds; the buzzer is on ESP32 GPIO 26. Software tests pass, but camera/model accuracy and physical actuation still need acceptance on your rig.
+> **Scan timing update:** the Pi now boots idle and requires an explicit start from the phone. The alternating route and user-defined return time replace the previous fixed 648-second cycle. See [Adjustable scan timing](SCAN_TIMING.md) for the current startup and acceptance steps.
+
+
+Update the Raspberry Pi server, ESP32 firmware, and Android app together. The nominal scan is 648 seconds (~10.8 minutes); the buzzer is on ESP32 GPIO 26. Software tests pass, but camera/model accuracy and physical actuation still need acceptance on your rig.
 
 ## Raspberry Pi 5
 
