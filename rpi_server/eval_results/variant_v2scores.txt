@@ -1,0 +1,104 @@
+### variant v2scores: --precise scores
+Thu Oct 22 19:52:55 +08 2026
+16-bit layers: conv42, conv53, conv63
+Calibration: 256 images from ../datasets_fixed/pest/train/images
+Calibration:   0%|          | 0/64 [00:00<?, ?entries/s]Calibration:  12%|█▎        | 8/64 [01:08<07:59,  8.57s/entries]Calibration:  25%|██▌       | 16/64 [01:11<02:59,  3.74s/entries]Calibration:  38%|███▊      | 24/64 [01:14<01:28,  2.22s/entries]Calibration:  50%|█████     | 32/64 [01:17<00:46,  1.46s/entries]Calibration:  62%|██████▎   | 40/64 [01:19<00:24,  1.04s/entries]Calibration:  75%|███████▌  | 48/64 [01:21<00:12,  1.29entries/s]Calibration:  88%|████████▊ | 56/64 [01:23<00:04,  1.67entries/s]Calibration: 100%|██████████| 64/64 [01:25<00:00,  2.00entries/s]Calibration: 100%|██████████| 64/64 [01:25<00:00,  2.00entries/s]Calibration: 100%|██████████| 64/64 [01:25<00:00,  1.34s/entries]
+[info] Output layers signal-to-noise ratio (SNR): measures the quantization noise (higher is better)
+[info] 	best_detect_v2scores/output_layer1 SNR:	20.25 dB
+[info] 	best_detect_v2scores/output_layer3 SNR:	17.33 dB
+[info] 	best_detect_v2scores/output_layer5 SNR:	17.76 dB
+[info] 	best_detect_v2scores/output_layer2 SNR:	22.86 dB
+[info] 	best_detect_v2scores/output_layer4 SNR:	22.76 dB
+[info] 	best_detect_v2scores/output_layer6 SNR:	23.68 dB
+Wrote best_detect_v2scores.har
+[info] No GPU chosen and no suitable GPU found, falling back to CPU.
+[warning] Cannot use graphviz, so no visualizations will be created
+Emulated Hailo-8L model ready (best_detect_v2scores.har, warm-up 42 s)
+
+Evaluating pest/test on the emulated Hailo-8L ...
+
+=== pest / test (148 images) / Hailo-8L 8-bit emulation ===
+
+whiteflies: 167 labelled objects, minimum confidence 0.55
+   precision  95.0%   recall  57.5%   F1  0.72   (found 96, false 5, missed 71)
+   missed because: model found nothing 37, confidence below minimum 16, gate: area 12, gate: pale 6
+   per photo: TP 7  FP 0  TN 137  FN 4  |  accuracy 97.3%  sensitivity 63.6%  specificity 100.0%
+   confidence sweep:  min   precision  recall   F1
+                     0.25     86.8%    67.1%   0.76
+                     0.30     86.8%    67.1%   0.76
+                     0.35     86.8%    67.1%   0.76
+                     0.40     86.8%    67.1%   0.76
+                     0.45     89.6%    67.1%   0.77  <- best F1
+                     0.50     90.5%    62.9%   0.74
+                     0.55     95.0%    57.5%   0.72
+                     0.60     96.2%    45.5%   0.62
+                     0.65     97.8%    26.3%   0.42
+                     0.70     90.0%     5.4%   0.10
+                     0.75    100.0%     0.6%   0.01
+                     0.80      0.0%     0.0%   0.00
+                     0.85      0.0%     0.0%   0.00
+
+worm: 395 labelled objects, minimum confidence 0.65
+   precision  97.6%   recall  93.7%   F1  0.96   (found 370, false 9, missed 25)
+   missed because: model found nothing 14, confidence below minimum 11
+   per photo: TP 127  FP 0  TN 19  FN 2  |  accuracy 98.6%  sensitivity 98.4%  specificity 100.0%
+   confidence sweep:  min   precision  recall   F1
+                     0.25     95.7%    95.9%   0.96
+                     0.30     95.7%    95.9%   0.96
+                     0.35     95.7%    95.9%   0.96
+                     0.40     95.7%    95.4%   0.96
+                     0.45     95.9%    95.4%   0.96
+                     0.50     96.6%    94.9%   0.96
+                     0.55     96.9%    94.4%   0.96
+                     0.60     97.4%    94.4%   0.96  <- best F1
+                     0.65     97.6%    93.7%   0.96
+                     0.70     97.6%    92.2%   0.95
+                     0.75     97.7%    86.1%   0.92
+                     0.80     98.2%    70.1%   0.82
+                     0.85    100.0%    36.2%   0.53
+[info] No GPU chosen and no suitable GPU found, falling back to CPU.
+[warning] Cannot use graphviz, so no visualizations will be created
+Emulated Hailo-8L model ready (best_detect_v2scores.har, warm-up 32 s)
+
+Evaluating pest/test on the emulated Hailo-8L ...
+
+=== pest / test (148 images) / Hailo-8L 8-bit emulation ===
+
+whiteflies: 155 labelled objects, minimum confidence 0.55
+   precision  95.0%   recall  61.9%   F1  0.75   (found 96, false 5, missed 59)
+   missed because: model found nothing 37, confidence below minimum 16, gate: pale 6
+   per photo: TP 7  FP 0  TN 141  FN 0  |  accuracy 100.0%  sensitivity 100.0%  specificity 100.0%
+   confidence sweep:  min   precision  recall   F1
+                     0.25     86.8%    72.3%   0.79
+                     0.30     86.8%    72.3%   0.79
+                     0.35     86.8%    72.3%   0.79
+                     0.40     86.8%    72.3%   0.79
+                     0.45     89.6%    72.3%   0.80  <- best F1
+                     0.50     90.5%    67.7%   0.77
+                     0.55     95.0%    61.9%   0.75
+                     0.60     96.2%    49.0%   0.65
+                     0.65     97.8%    28.4%   0.44
+                     0.70     90.0%     5.8%   0.11
+                     0.75    100.0%     0.6%   0.01
+                     0.80      0.0%     0.0%   0.00
+                     0.85      0.0%     0.0%   0.00
+
+worm: 395 labelled objects, minimum confidence 0.65
+   precision  97.6%   recall  93.7%   F1  0.96   (found 370, false 9, missed 25)
+   missed because: model found nothing 14, confidence below minimum 11
+   per photo: TP 127  FP 0  TN 19  FN 2  |  accuracy 98.6%  sensitivity 98.4%  specificity 100.0%
+   confidence sweep:  min   precision  recall   F1
+                     0.25     95.7%    95.9%   0.96
+                     0.30     95.7%    95.9%   0.96
+                     0.35     95.7%    95.9%   0.96
+                     0.40     95.7%    95.4%   0.96
+                     0.45     95.9%    95.4%   0.96
+                     0.50     96.6%    94.9%   0.96
+                     0.55     96.9%    94.4%   0.96
+                     0.60     97.4%    94.4%   0.96  <- best F1
+                     0.65     97.6%    93.7%   0.96
+                     0.70     97.6%    92.2%   0.95
+                     0.75     97.7%    86.1%   0.92
+                     0.80     98.2%    70.1%   0.82
+                     0.85    100.0%    36.2%   0.53
+Thu Oct 22 20:36:28 +08 2026

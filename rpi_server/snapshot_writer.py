@@ -40,7 +40,7 @@ import config
 
 log = logging.getLogger("farmcam.snapshots")
 
-_THUMB_SIZE = (200, 150)
+_THUMB_SIZE = (320, 240)
 
 
 class SnapshotWriter:
@@ -48,7 +48,9 @@ class SnapshotWriter:
     def __init__(self, db=None, clock_fn=None) -> None:
         self._db          = db            # PersistenceDB (optional, for prune guard)
         self._clock       = clock_fn or time.time
-        self._queue: queue.Queue = queue.Queue(maxsize=50)
+        # Queued frames are shared references, not copies: one per detection
+        # of a window (up to 256) fits without dropping any photo.
+        self._queue: queue.Queue = queue.Queue(maxsize=512)
         self._thread: Optional[threading.Thread] = None
         self._prune_thread: Optional[threading.Thread] = None
         self._running     = False
@@ -145,8 +147,9 @@ class SnapshotWriter:
 
         # Atomic write: write to tmp then rename
         self._atomic_write(annotated, full_path, quality=85)
-        thumb = cv2.resize(annotated, _THUMB_SIZE, interpolation=cv2.INTER_AREA)
-        self._atomic_write(thumb, thumb_path, quality=75)
+        # The preview is a close-up of the detection: a whitefly in the whole
+        # frame shrunk to a thumbnail would be a few pixels.
+        self._atomic_write(close_up(annotated, dets[0] if dets else None), thumb_path, quality=80)
 
         # Update DB if available
         if self._db:
@@ -224,6 +227,25 @@ class SnapshotWriter:
 
         log.info("snapshot prune done: %.1f MB remain",
                  _dir_size(config.SNAPSHOT_DIR) / 1024 ** 2)
+
+
+def close_up(frame: np.ndarray, det=None) -> np.ndarray:
+    """A 4:3 crop around the detection box (about 3x its size, at least
+    160 px wide, kept inside the frame) resized to _THUMB_SIZE. Without a box,
+    the whole frame shrunk."""
+    h, w = frame.shape[:2]
+    if det is None:
+        return cv2.resize(frame, _THUMB_SIZE, interpolation=cv2.INTER_AREA)
+    x1, y1, x2, y2 = (float(v) for v in det[:4])
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    cw = max(160.0, 3 * (x2 - x1), 3 * (y2 - y1) * 4 / 3)
+    cw = min(cw, w, h * 4 / 3)
+    ch = cw * 3 / 4
+    left = int(round(min(max(cx - cw / 2, 0), w - cw)))
+    top = int(round(min(max(cy - ch / 2, 0), h - ch)))
+    crop = frame[top:top + int(round(ch)), left:left + int(round(cw))]
+    interp = cv2.INTER_AREA if crop.shape[1] > _THUMB_SIZE[0] else cv2.INTER_CUBIC
+    return cv2.resize(crop, _THUMB_SIZE, interpolation=interp)
 
 
 def _safe_remove(path: Path) -> bool:

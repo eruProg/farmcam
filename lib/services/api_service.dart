@@ -1,13 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../data/app_state.dart';
 
 class PumpCommandResult {
   final bool ok;
   final String? error;
-  const PumpCommandResult(this.ok, [this.error]);
+  /// Seconds left when the Pi refused a manual spray because the automatic
+  /// spray cooldown is running (HTTP 409 "cooldown"); null otherwise.
+  final double? cooldownLeft;
+  const PumpCommandResult(this.ok, [this.error, this.cooldownLeft]);
+  bool get blockedByCooldown => cooldownLeft != null;
 }
 
 /// HTTP API client for FarmCam RPi5 server.
@@ -146,18 +149,24 @@ class ApiService {
     return null;
   }
 
-  /// Trigger a timed pump spray (auto-detection driven).
-  Future<PumpCommandResult> triggerPump() => _pumpCommand('trigger');
+  /// A 2.5 s manual spray. [override]: the user confirmed spraying during the
+  /// automatic-spray cooldown (the Pi refuses with 409 otherwise).
+  Future<PumpCommandResult> triggerPump({bool override = false}) =>
+      _pumpCommand('trigger', override: override);
 
   Future<PumpCommandResult> _pumpCommand(String action,
-      {bool requireActive = false}) async {
+      {bool requireActive = false, bool override = false}) async {
     http.Response? resp;
     try {
       // The Pi answers within ~4s even when the ESP32 is offline.
       resp = await http
-          .post(Uri.parse('$_base/api/pump/$action'))
+          .post(Uri.parse('$_base/api/pump/$action${override ? '?override=1' : ''}'))
           .timeout(Duration(seconds: action == 'heartbeat' ? 2 : 8));
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (resp.statusCode == 409 && data['error'] == 'cooldown') {
+        return PumpCommandResult(false, data['message']?.toString() ?? 'Automatic spraying is paused.',
+            (data['remaining_s'] as num?)?.toDouble() ?? 0);
+      }
       if (resp.statusCode == 200 &&
           data['ok'] == true &&
           (!requireActive || data['active'] == true)) {
@@ -179,31 +188,13 @@ class ApiService {
     }
   }
 
-  Future<PumpCommandResult> pumpHold() =>
-      _pumpCommand('hold', requireActive: true);
+  Future<PumpCommandResult> pumpHold({bool override = false}) =>
+      _pumpCommand('hold', requireActive: true, override: override);
 
   Future<PumpCommandResult> pumpRelease() => _pumpCommand('release');
 
   Future<PumpCommandResult> pumpHeartbeat() =>
       _pumpCommand('heartbeat', requireActive: true);
-
-  // ─── Image Detection ──────────────────────────────────────────
-
-  Future<Map<String, dynamic>?> detectImage(File imageFile) async {
-    try {
-      final request =
-          http.MultipartRequest('POST', Uri.parse('$_base/api/detect'));
-      request.files
-          .add(await http.MultipartFile.fromPath('image', imageFile.path));
-      final streamedResp =
-          await request.send().timeout(const Duration(seconds: 30));
-      final resp = await http.Response.fromStream(streamedResp);
-      if (resp.statusCode == 200) {
-        return jsonDecode(resp.body);
-      }
-    } catch (_) {}
-    return null;
-  }
 
   // ─── Scan Status (phase / countdown) ─────────────────────────
 
@@ -282,6 +273,25 @@ class ApiService {
 
   Future<Map<String, dynamic>> fetchConfig() => _json('/api/config');
   Future<Map<String, dynamic>> fetchPrecision() => _json('/api/precision');
+  /// Creates a "Test notification" event on the Pi; the phone's background
+  /// watcher turns it into a notification within ~30 s.
+  Future<Map<String, dynamic>> sendTestEvent() => _json('/api/events/test', post: true);
+
+  /// Shut down ('shutdown') or restart ('restart') the Pi. The Pi stops the
+  /// scan and the pump first.
+  /// null when the Pi accepted; otherwise why not (e.g. no permission to
+  /// power off, which the Pi now says instead of silently staying on).
+  Future<String?> systemPower(String action) async {
+    try {
+      final data = await _json('/api/system/power', post: true, body: {'action': action});
+      return data['ok'] == true ? null : 'FarmCam did not accept the request.';
+    } catch (e) {
+      final text = '$e';
+      return text.startsWith('Exception: ')
+          ? text.substring('Exception: '.length)
+          : 'FarmCam did not answer. Check the connection and try again.';
+    }
+  }
   Future<Map<String, dynamic>> testSms([String? phone]) => _json(
       '/api/sms/test${phone == null ? '' : '?phone=${Uri.encodeQueryComponent(phone)}'}',
       post: true);
@@ -335,6 +345,60 @@ class ApiService {
     } catch (_) {}
     return null;
   }
+
+  // ─── Redesigned app: one-call state, discovery, datasets, reports ──
+
+  String get baseUrl => _base;
+
+  /// Everything the app shows, in one request. Throws on failure so the
+  /// controller can count misses and reconnect.
+  Future<Map<String, dynamic>> appState() =>
+      _json('/api/app/state').timeout(const Duration(seconds: 5));
+
+  /// Single full-resolution photo for datasets.
+  Future<Map<String, dynamic>> captureFull(
+          {int? station, String? position, String note = ''}) =>
+      _json('/api/capture/full', post: true, body: {
+        if (station != null) 'station': station,
+        if (position != null) 'position': position,
+        if (note.isNotEmpty) 'note': note,
+      }).timeout(const Duration(seconds: 15));
+
+  Future<Map<String, dynamic>> captureBurst(
+          {required int count,
+          required double intervalS,
+          int? station,
+          String? position,
+          String note = ''}) =>
+      _json('/api/capture/burst', post: true, body: {
+        'count': count,
+        'interval_s': intervalS,
+        if (station != null) 'station': station,
+        if (position != null) 'position': position,
+        'note': note,
+      });
+
+  Future<Map<String, dynamic>> captures({int page = 1, int pageSize = 30}) =>
+      _json('/api/captures?page=$page&page_size=$pageSize');
+
+  Future<bool> deleteCapture(String name) async {
+    try {
+      final resp = await http
+          .delete(Uri.parse('$_base/api/captures/${Uri.encodeComponent(name)}'))
+          .timeout(const Duration(seconds: 6));
+      return resp.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String captureUrl(String name) => '$_base/api/captures/${Uri.encodeComponent(name)}';
+  String captureThumbUrl(String name) => '${captureUrl(name)}/thumb';
+
+  Future<Map<String, dynamic>> reportSummary({int days = 14}) =>
+      _json('/api/reports/summary?days=$days');
+
+  String get reportCsvUrl => '$_base/api/reports/export.csv';
 
   // ─── SMS Status ──────────────────────────────────────────────
 

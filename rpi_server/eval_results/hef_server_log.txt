@@ -1,0 +1,101 @@
+FarmCam HEF tester: open http://localhost:8765 in your browser (514 labelled samples). Ctrl+C stops it.
+2026-10-22 22:59:33.206364: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2026-10-22 22:59:33.216258: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2026-10-22 22:59:33.243243: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:477] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1792681173.286117  348903 cuda_dnn.cc:8310] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1792681173.300713  348903 cuda_blas.cc:1418] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+2026-10-22 22:59:33.346978: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Traceback (most recent call last):
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 119, in do_GET
+    self._send(200, dict(
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 102, in _send
+    self.wfile.write(data)
+  File "/usr/lib/python3.10/socketserver.py", line 826, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 43696)
+Traceback (most recent call last):
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 119, in do_GET
+    self._send(200, dict(
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 102, in _send
+    self.wfile.write(data)
+  File "/usr/lib/python3.10/socketserver.py", line 826, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/socketserver.py", line 683, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.10/socketserver.py", line 360, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.10/socketserver.py", line 747, in __init__
+    self.handle()
+  File "/usr/lib/python3.10/http/server.py", line 433, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.10/http/server.py", line 421, in handle_one_request
+    method()
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 152, in do_GET
+    self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 101, in _send
+    self.end_headers()
+  File "/usr/lib/python3.10/http/server.py", line 535, in end_headers
+    self.flush_headers()
+  File "/usr/lib/python3.10/http/server.py", line 539, in flush_headers
+    self.wfile.write(b"".join(self._headers_buffer))
+  File "/usr/lib/python3.10/socketserver.py", line 826, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+[info] No GPU chosen and no suitable GPU found, falling back to CPU.
+[warning] Cannot use graphviz, so no visualizations will be created
+Emulated Hailo-8L model ready (best_detect.har, warm-up 47 s)
+Emulated Hailo-8L model ready (best_seg.har, warm-up 51 s)
+Traceback (most recent call last):
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 147, in do_GET
+    self._send(200, analyse(frame, False, item["name"], started, truth, coverage))
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 102, in _send
+    self.wfile.write(data)
+  File "/usr/lib/python3.10/socketserver.py", line 826, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 38826)
+Traceback (most recent call last):
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 147, in do_GET
+    self._send(200, analyse(frame, False, item["name"], started, truth, coverage))
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 102, in _send
+    self.wfile.write(data)
+  File "/usr/lib/python3.10/socketserver.py", line 826, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/socketserver.py", line 683, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.10/socketserver.py", line 360, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.10/socketserver.py", line 747, in __init__
+    self.handle()
+  File "/usr/lib/python3.10/http/server.py", line 433, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.10/http/server.py", line 421, in handle_one_request
+    method()
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 152, in do_GET
+    self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
+  File "/mnt/c/Users/eru/Documents/Thesis/rpi_server/hef_test_server.py", line 101, in _send
+    self.end_headers()
+  File "/usr/lib/python3.10/http/server.py", line 535, in end_headers
+    self.flush_headers()
+  File "/usr/lib/python3.10/http/server.py", line 539, in flush_headers
+    self.wfile.write(b"".join(self._headers_buffer))
+  File "/usr/lib/python3.10/socketserver.py", line 826, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------

@@ -3,28 +3,28 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:farmcam/screens/dashboard_screen.dart';
+import 'package:farmcam/core/theme.dart';
+import 'package:farmcam/data/app_state.dart';
+import 'package:farmcam/services/api_service.dart';
+import 'package:farmcam/widgets/pump_button.dart';
 
+/// The pump safety rules carried over unchanged from the old dashboard:
+/// exactly one release, sent after /hold answers even if released early.
 void main() {
   for (final releaseBeforeReply in [false, true]) {
     testWidgets(
         releaseBeforeReply
             ? 'release during pending start sends stop after acknowledgement'
             : 'holding confirms spray and release sends stop', (tester) async {
-      tester.view.physicalSize = const Size(400, 1000);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
       final commands = <String>[];
       final hold = Completer<http.Response>();
+      final api = ApiService(AppState()..setConnection('192.0.2.1', 8000));
       await http.runWithClient(() async {
-        await tester.pumpWidget(const MaterialApp(
-          home: DashboardScreen(rpiIp: '192.0.2.1'),
+        await tester.pumpWidget(MaterialApp(
+          theme: AppTheme.light(),
+          home: Scaffold(body: Center(child: PumpButton(api: api))),
         ));
-        await tester.pump();
         final button = find.text('Manual Pump');
-        await tester.ensureVisible(button);
-        await tester.pump();
         final gesture = await tester.startGesture(tester.getCenter(button));
         await tester.pump(const Duration(milliseconds: 600));
         expect(commands, ['hold']);
@@ -49,7 +49,7 @@ void main() {
         expect(commands.where((c) => c == 'release'), hasLength(1));
         expect(find.text('SPRAYING — Stop'), findsNothing);
         await tester.pumpWidget(const SizedBox());
-        await tester.pump(const Duration(seconds: 3));
+        await tester.pump(const Duration(seconds: 4));
       },
           () => MockClient((request) async {
                 final path = request.url.path;
@@ -57,10 +57,8 @@ void main() {
                   final action = path.split('/').last;
                   commands.add(action);
                   if (action == 'hold') return hold.future;
-                  return http.Response(
-                      '{"ok":true,"active":${action == 'heartbeat'}}', 200);
+                  return http.Response('{"ok":true,"active":${action == 'heartbeat'}}', 200);
                 }
-                if (path == '/api/lettuce') return http.Response('[]', 200);
                 return http.Response('{}', 200);
               }));
     });

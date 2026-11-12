@@ -20,7 +20,10 @@ from pathlib import Path
 
 # ─── Configuration ───────────────────────────────────────────────
 SCRIPT_DIR  = Path(__file__).parent.resolve()
-CALIB_DIR   = SCRIPT_DIR.parent / "rpi_server" / "calib"
+# Calibration images MUST have the same colours the model was trained on.
+# rpi_server/calib holds the old red/blue-swapped photos; for models retrained
+# on datasets_fixed, set FARMCAM_CALIB_DIR=../datasets_fixed/pest/train/images.
+CALIB_DIR   = Path(os.environ.get("FARMCAM_CALIB_DIR", SCRIPT_DIR.parent / "rpi_server" / "calib"))
 IMG_SIZE    = 640   # Must match export step
 CALIB_COUNT = 64    # Number of calibration images to use (more = better accuracy)
 

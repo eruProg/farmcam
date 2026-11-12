@@ -5,6 +5,7 @@ Run: python -m unittest discover -s rpi_server -p 'test_*.py'
 """
 import ast
 import asyncio
+import re
 from datetime import datetime
 from pathlib import Path
 import tempfile
@@ -26,7 +27,13 @@ class PumpControlTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.thread = Mock()
         self.command = Mock(return_value='OK')
+        self.cooldown = Mock()      # CooldownManager stand-in; inactive by default
+        self.cooldown.status.return_value = {'active': False, 'remaining_s': 0.0, 'total_s': 604800,
+                                             'last_triggered_at': None}
         self.ns = dict(
+            coordinator=types.SimpleNamespace(get_shared_state=lambda: {'cooldown_mgr': self.cooldown},
+                                              notify=Mock()),
+            config=types.SimpleNamespace(PUMP_COOLDOWN_S=7 * 86400),
             JSONResponse=Reply, threading=types.SimpleNamespace(Thread=self.thread),
             time=types.SimpleNamespace(time=time.time, sleep=Mock()), datetime=datetime,
             pump_lock=threading.Lock(), manual_control_lock=threading.Lock(),
@@ -35,11 +42,13 @@ class PumpControlTests(unittest.TestCase):
             MANUAL_PUMP_TIMEOUT=2.0, ESP32_IP='192.0.2.1', ESP32_PORT=80,
             LAST_PUMP_FILE=str(Path(self.temp.name) / 'last.txt'), active_station_id=1,
             sms_lock=threading.Lock(), sms_cooldown={}, SMS_COOLDOWN_SECS=10,
-            esp32_cmd=self.command, send_sms_alert=Mock(),
+            esp32_cmd=self.command, send_sms_alert=Mock(), re=re,
         )
-        source = ast.parse(Path(__file__).with_name('main.py').read_text(encoding='utf-8'))
-        names = {'api_pump_hold', 'api_pump_release', 'api_pump_heartbeat',
-                 '_manual_pump_watchdog', '_pump_worker', 'esp32_cmd', 'send_sms_alert'}
+        source = ast.parse(Path(__file__).with_name('main.py').read_text(encoding='utf-8-sig'))
+        names = {'api_pump_hold', 'api_pump_release', 'api_pump_heartbeat', 'api_pump_trigger',
+                 '_manual_pump_watchdog', '_pump_worker', 'esp32_cmd', 'send_sms_alert',
+                 '_manual_spray_blocked', '_restart_pump_cooldown', 'duration_text', '_spray_text',
+                 '_found_text', '_spray_sms'}
         nodes = [node for node in source.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                  and node.name in names]
         for node in nodes:
@@ -124,6 +133,46 @@ class PumpControlTests(unittest.TestCase):
         self.assertFalse(Path(self.ns['LAST_PUMP_FILE']).exists())
         self.thread.assert_not_called()
         self.assertFalse(self.ns['pump_active'])
+
+    def _cooldown_running(self, remaining=4 * 86400 + 3 * 3600):
+        self.cooldown.status.return_value = {'active': True, 'remaining_s': float(remaining),
+                                             'total_s': 604800, 'last_triggered_at': 1000.0}
+
+    def test_manual_hold_during_cooldown_needs_confirmation(self):
+        self._cooldown_running()
+        blocked = self.ns['api_pump_hold']()
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.content['error'], 'cooldown')
+        self.assertEqual(blocked.content['message'], 'Automatic spraying is paused for another 4 days 3 h.')
+        self.command.assert_not_called()
+        self.assertTrue(self.ns['api_pump_hold'](override=True)['active'])
+        self.cooldown.record_fire.assert_called_once_with('pump')      # the 7 days start again
+
+    def test_manual_tap_during_cooldown_needs_confirmation(self):
+        self._cooldown_running(3600 * 5)
+        self.assertEqual(self.ns['api_pump_trigger']().status_code, 409)
+        self.cooldown.record_fire.assert_not_called()
+        self.assertTrue(self.ns['api_pump_trigger'](override=True)['ok'])
+        self.cooldown.record_fire.assert_called_once_with('pump')
+
+    def test_manual_spray_outside_cooldown_restarts_it_without_asking(self):
+        self.assertTrue(self.ns['api_pump_trigger']()['ok'])
+        self.cooldown.record_fire.assert_called_once_with('pump')
+
+    def test_spray_messages_say_all_lettuces(self):
+        text = self.ns['_spray_text']
+        self.assertEqual(text(2.5, 'AUTO: 3 whiteflies on Lettuce 2'),
+                         '3 whiteflies found on Lettuce 2. All lettuces were sprayed.')
+        self.assertEqual(text(2.5, 'MANUAL_TRIGGER'), 'All lettuces were sprayed from the app.')
+        sms = self.ns['_spray_sms']
+        self.assertEqual(sms('AUTO: 3 whiteflies on Lettuce 2'),
+                         'FarmCam alert: 3 whiteflies found on Lettuce 2. Spray done.')
+        self.assertEqual(sms('AUTO: 4 worms on Lettuce 1'), 'FarmCam alert: 4 worms found on Lettuce 1. Spray done.')
+        self.assertEqual(sms('AUTO: fungus on 18% of Lettuce 3'),
+                         'FarmCam alert: Fungus found on Lettuce 3. Spray done.')
+        self.assertEqual(sms('MANUAL_TRIGGER'), 'FarmCam: Lettuces sprayed from the app.')
+        self.assertEqual(self.ns['duration_text'](7 * 86400), '7 days 0 h')
+        self.assertEqual(self.ns['duration_text'](3 * 3600 + 120), '3 h 2 min')
 
     def test_http_200_error_body_is_rejected(self):
         response = Mock()

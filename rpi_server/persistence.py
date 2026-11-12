@@ -94,6 +94,17 @@ CREATE TABLE IF NOT EXISTS cooldowns (
     last_fired REAL NOT NULL DEFAULT 0
 );
 
+-- Things the phone app turns into notifications ("Whitefly detected", errors).
+CREATE TABLE IF NOT EXISTS events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    time      REAL    NOT NULL,
+    kind      TEXT    NOT NULL,   -- whiteflies | worm | fungus | spray | error | ok | test
+    title     TEXT    NOT NULL,
+    body      TEXT    NOT NULL DEFAULT '',
+    station   INTEGER,
+    severity  TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_tracks_station
     ON tracks(station, position, status);
 CREATE INDEX IF NOT EXISTS idx_tracks_first_seen
@@ -461,6 +472,68 @@ class PersistenceDB:
             result[cls] = round(tp / max(tp + fp, 1), 4) if (tp + fp) > 0 else None
         return result
 
+    # ── Reports ───────────────────────────────────────────────────────────
+
+    def recent_tracks(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Newest confirmed (not false-positive) tracks, for the app's feed."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tracks WHERE is_fp=0 ORDER BY last_seen DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._public_track(dict(r)) for r in rows]
+
+    def report_summary(self, days: int = 14, now: float = None) -> Dict[str, Any]:
+        """Per-day and per-station detection counts for the History page.
+        Counts tracks by the local day they were first seen; false positives
+        are excluded from counts and reported separately."""
+        now = time.time() if now is None else now
+        start = now - days * 86400
+        with self._conn() as conn:
+            daily = conn.execute(
+                "SELECT date(first_seen,'unixepoch','localtime') AS day, class, COUNT(*) AS n "
+                "FROM tracks WHERE is_fp=0 AND first_seen>=? GROUP BY day, class", (start,)
+            ).fetchall()
+            stations = conn.execute(
+                "SELECT station, class, COUNT(*) AS n, SUM(status='active') AS active "
+                "FROM tracks WHERE is_fp=0 AND first_seen>=? GROUP BY station, class", (start,)
+            ).fetchall()
+            fp = conn.execute(
+                "SELECT COUNT(*) FROM tracks WHERE is_fp=1 AND first_seen>=?", (start,)).fetchone()[0]
+            reviewed = conn.execute(
+                "SELECT COUNT(*) FROM tracks WHERE reviewed=1 AND first_seen>=?", (start,)).fetchone()[0]
+            scans = conn.execute(
+                "SELECT COUNT(*) FROM scans WHERE status='completed' AND started_at>=?", (start,)).fetchone()[0]
+
+        day_names = [time.strftime("%Y-%m-%d", time.localtime(now - i * 86400)) for i in range(days - 1, -1, -1)]
+        by_day = {d: {} for d in day_names}
+        for row in daily:
+            by_day.setdefault(row["day"], {})[row["class"]] = row["n"]
+        by_station: Dict[int, Dict[str, Any]] = {i: {"classes": {}, "active": 0} for i in range(1, 5)}
+        totals: Dict[str, int] = {}
+        for row in stations:
+            entry = by_station.setdefault(row["station"], {"classes": {}, "active": 0})
+            entry["classes"][row["class"]] = row["n"]
+            entry["active"] += row["active"] or 0
+            totals[row["class"]] = totals.get(row["class"], 0) + row["n"]
+        return {
+            "days": [{"date": d, "classes": by_day.get(d, {}), "total": sum(by_day.get(d, {}).values())}
+                     for d in day_names],
+            "stations": [dict(station=s, **v) for s, v in sorted(by_station.items())],
+            "totals": totals,
+            "total": sum(totals.values()),
+            "false_positives": fp,
+            "reviewed": reviewed,
+            "completed_scans": scans,
+            "precision": self.precision_by_class(),
+            "days_covered": days,
+        }
+
+    def export_tracks(self) -> List[Dict[str, Any]]:
+        """Every track, oldest first, for CSV export."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM tracks ORDER BY first_seen").fetchall()
+        return [self._public_track(dict(r)) for r in rows]
+
     def update_track_snapshot(
         self, track_id: str, snapshot_path: str, thumb_path: str
     ) -> None:
@@ -469,6 +542,46 @@ class PersistenceDB:
                 "UPDATE tracks SET snapshot_path=?, thumb_path=? WHERE id=?",
                 (snapshot_path, thumb_path, track_id)
             )
+
+    def find_active_track(self, station: int, position: str, cls: str,
+                          bbox: List[int]) -> Optional[str]:
+        """An active (unresolved) track of this lettuce part and class at about
+        the same place, i.e. something already reported before."""
+        names = ("whiteflies", "whitefly") if cls in ("whiteflies", "whitefly") else (cls,)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, bbox FROM tracks WHERE station=? AND position=? AND status='active' "
+                f"AND is_fp=0 AND class IN ({','.join('?' * len(names))})",
+                (station, position, *names)).fetchall()
+        for row in rows:
+            if _iou(bbox, _json.loads(row["bbox"] or "[0,0,0,0]")) >= config.TRACK_IOU_RESCAN:
+                return row["id"]
+        return None
+
+    # ── Events (phone notifications) ──────────────────────────────────────
+
+    EVENT_KEEP_S = 30 * 86400
+
+    def add_event(self, kind: str, title: str, body: str = "", station: Optional[int] = None,
+                  severity: Optional[str] = None, now: float = None) -> int:
+        now = time.time() if now is None else now
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO events(time,kind,title,body,station,severity) VALUES(?,?,?,?,?,?)",
+                (now, kind, title, body, station, severity))
+            conn.execute("DELETE FROM events WHERE time < ?", (now - self.EVENT_KEEP_S,))
+            return int(cur.lastrowid)
+
+    def events_after(self, after_id: int, limit: int = 20) -> Tuple[List[Dict[str, Any]], int]:
+        """Events newer than `after_id` (oldest first) and the newest id.
+        after_id < 0: no events, only the newest id (a new phone starts there)."""
+        with self._conn() as conn:
+            last = conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+            if after_id < 0:
+                return [], int(last)
+            rows = conn.execute("SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?",
+                                (after_id, max(1, min(limit, 100)))).fetchall()
+        return [dict(r) for r in rows], int(last)
 
 
 # ── Cooldown manager ──────────────────────────────────────────────────────────

@@ -39,7 +39,7 @@ def inference_scope(path, hardware, tiles):
         include(root)
     # Fail rather than accidentally bringing application side effects into a
     # diagnostic run if a future inference function calls application logic.
-    allowed = {'detect_frame', 'run_inference_on_network', 'postprocess_yolov8',
+    allowed = {'detect_frame', '_inference_passes', 'run_inference_on_network', '_unletterbox_det', 'postprocess_yolov8',
         'TemporalConsensus', 'nms', '_configure_one_hef', '_hef_input_hw',
         '_inference_regions', '_map_crop_detection', '_merge_region_detections',
         '_summarize_outputs', '_record_class_scores', '_decode_hailo_nms',
@@ -55,7 +55,13 @@ def inference_scope(path, hardware, tiles):
                 scope[node.targets[0].id] = ast.literal_eval(node.value)
             except (ValueError, TypeError):
                 pass
-    scope.update(SMALL_OBJECT_TILES=tiles, hailo_swap_lock=threading.Lock(), hailo_models=[])
+            name = node.targets[0].id
+            if name in ('SPLIT_COLOR_PASSES', 'SEG_CLASS_NAMES') and name not in scope:
+                import config   # chosen by config.PEST_MODEL / FUNGUS_MODEL
+                scope[name] = eval(compile(ast.Expression(node.value), str(path), 'eval'), {'config': config})
+    import config   # _inference_passes reads config.WHITEFLY_TILE_GRID
+    scope.update(config=config, SMALL_OBJECT_TILES=tiles, hailo_swap_lock=threading.Lock(), hailo_models=[],
+                 MODEL_COLOR_ORDER=os.environ.get("FARMCAM_MODEL_COLORS", "split"))
     scope['MIN_CONF_THRESHOLD'] = min(scope['PER_CLASS_THRESHOLDS'].values())
     for node in tree.body:
         if getattr(node, 'name', None) in selected:

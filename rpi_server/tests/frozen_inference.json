@@ -10,6 +10,6 @@
   "_maybe_sigmoid": "3b89c1feaeee9b6fa33686a6bad861806617dff192051b12f84f35a8437e9d34",
   "postprocess_yolov8": "8406054a907ea54e29331973efbd96f86ff1086838a9be13acfa834e168b344e",
   "_mask_to_polygon_and_area": "32772902f3580786afdf63edd2a9967202b07886b90633f9bac662cd2cb2ccc4",
-  "run_inference_on_network": "2f62c422d728588c4cd0eca8eb9ba0897c8a7be26e25a611b37d462bf7c8c9a0",
-  "detect_frame": "f78d893dd092a89efba9f82dbebdde0258751bd346cc8bfb396209144c9fb122"
+  "run_inference_on_network": "4473f37a06b97d8f27a69e441b526a3b59ce4fa0e33eee2b8423844614decb84",
+  "detect_frame": "c0b4577644870f2ba7207b0e362be615e8a64cbf555f2e27dd4901eb32503419"
 }

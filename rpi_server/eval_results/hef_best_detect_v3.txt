@@ -1,0 +1,47 @@
+### best_detect_v3 (emulated Hailo-8L)
+[info] No GPU chosen and no suitable GPU found, falling back to CPU.
+[warning] Cannot use graphviz, so no visualizations will be created
+Emulated Hailo-8L model ready (best_detect_v3.har, warm-up 30 s)
+
+Evaluating pest/test on the emulated Hailo-8L ...
+
+=== pest / test (148 images) / Hailo-8L 8-bit emulation ===
+
+whiteflies: 155 labelled objects, minimum confidence 0.55
+   precision  97.7%   recall  54.8%   F1  0.70   (found 85, false 2, missed 70)
+   missed because: model found nothing 41, confidence below minimum 24, gate: pale 5
+   per photo: TP 7  FP 0  TN 141  FN 0  |  accuracy 100.0%  sensitivity 100.0%  specificity 100.0%
+   confidence sweep:  min   precision  recall   F1
+                     0.25     89.3%    70.3%   0.79  <- best F1
+                     0.30     89.3%    70.3%   0.79
+                     0.35     89.3%    70.3%   0.79
+                     0.40     89.3%    70.3%   0.79
+                     0.45     96.2%    65.2%   0.78
+                     0.50     96.2%    65.2%   0.78
+                     0.55     97.7%    54.8%   0.70
+                     0.60     95.9%    30.3%   0.46
+                     0.65     93.1%    17.4%   0.29
+                     0.70      0.0%     0.0%   0.00
+                     0.75      0.0%     0.0%   0.00
+                     0.80      0.0%     0.0%   0.00
+                     0.85      0.0%     0.0%   0.00
+
+worm: 395 labelled objects, minimum confidence 0.65
+   precision  97.4%   recall  93.9%   F1  0.96   (found 371, false 10, missed 24)
+   missed because: model found nothing 12, confidence below minimum 11, gate: area 1
+   per photo: TP 127  FP 0  TN 19  FN 2  |  accuracy 98.6%  sensitivity 98.4%  specificity 100.0%
+   confidence sweep:  min   precision  recall   F1
+                     0.25     93.6%    96.2%   0.95
+                     0.30     94.2%    95.2%   0.95
+                     0.35     95.4%    94.9%   0.95
+                     0.40     95.7%    94.9%   0.95
+                     0.45     96.1%    94.7%   0.95
+                     0.50     96.1%    94.7%   0.95
+                     0.55     96.6%    94.7%   0.96
+                     0.60     97.1%    94.4%   0.96  <- best F1
+                     0.65     97.4%    93.9%   0.96
+                     0.70     98.0%    86.3%   0.92
+                     0.75     98.0%    74.7%   0.85
+                     0.80     99.1%    58.5%   0.74
+                     0.85    100.0%    23.5%   0.38
+### best_detect_v3 on machine photos with no pests

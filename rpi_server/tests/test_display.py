@@ -161,6 +161,7 @@ def test_service_is_independent_and_browser_is_sandboxed():
     assert 'User=farmer' in unit
     args = browser_arguments('/usr/bin/chromium','/home/farmer/profile')
     assert '--no-sandbox' not in args and '--kiosk' in args
+    assert '--password-store=basic' in args          # no keyring password dialog at start-up
     assert args[-1] == 'http://127.0.0.1:8090/'
 
 
@@ -175,7 +176,7 @@ def test_monitor_stream_caps_size_and_rate_without_changing_mobile_default():
     from unittest.mock import Mock
     import cv2
     import numpy as np
-    source = (Path(__file__).parents[1]/'main.py').read_text(encoding='utf-8')
+    source = (Path(__file__).parents[1]/'main.py').read_text(encoding='utf-8-sig')
     node = next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name == 'generate_mjpeg')
     sleep = Mock()
     scope = dict(frame_timestamp=1.0,frame_lock=threading.Lock(),current_frame=np.zeros((960,1280,3),np.uint8),
@@ -201,5 +202,29 @@ def test_cached_scan_time_advances_without_changing_phase_or_original():
     assert state.snapshot()['scan']['server_time'] == 102
     assert state.system['scan_state']['server_time'] == 100
     assert state.snapshot()['camera_frame_age_s'] == 2.2
+
+
+def test_activity_popup_reaches_the_screen_only_while_connected():
+    spraying = {'kind': 'spray', 'title': 'Spraying pesticide', 'body': 'All lettuces are being sprayed.'}
+    state = DisplayState(None, lambda: 100)
+    state.connected = True; state.observed_at = 100
+    state.health = responses()['/api/display/health']
+    state.system = {'activity': spraying}
+    assert state.snapshot()['activity'] == spraying
+    state.observed_at = 90                  # 10 s without an answer: not connected
+    assert state.snapshot()['activity'] is None
+
+
+def test_activity_popup_markup_and_styles_are_local():
+    root = Path(__file__).resolve().parents[1] / 'display'
+    html = (root / 'index.html').read_text(encoding='utf-8')
+    css = (root / 'display.css').read_text(encoding='utf-8')
+    js = (root / 'display.js').read_text(encoding='utf-8')
+    for element in ('id="activity"', 'id="activity-title"', 'id="activity-body"',
+                    'id="activity-icon-spray"', 'id="activity-icon-moving"'):
+        assert element in html
+    assert 'style=' not in html            # the display's CSP allows only display.css
+    assert 'backdrop-filter:blur' in css and 'position:fixed' in css.split('.activity{')[1].split('}')[0]
+    assert 'renderActivity(data.connected ? data.activity : null)' in js
 
 

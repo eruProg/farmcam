@@ -47,12 +47,12 @@ def test_comparison_only_extracts_inference_and_resets_scope():
     assert 'startup' not in a and 'coordinator' not in a and 'esp32_cmd' not in a
     assert a['temporal'] is not b['temporal']
     assert a['_function_hashes'] == b['_function_hashes']
-    assert a['PER_CLASS_THRESHOLDS']['worm'] == .45
+    assert a['PER_CLASS_THRESHOLDS']['worm'] == .25
     assert a['_inference_regions'](1280, 960)
 
 
 def test_loader_rejects_missing_pair_and_never_attempts_combined():
-    tree = ast.parse((Path(__file__).parents[1] / 'main.py').read_text(encoding='utf-8'))
+    tree = ast.parse((Path(__file__).parents[1] / 'main.py').read_text(encoding='utf-8-sig'))
     node = next(n for n in tree.body if getattr(n, 'name', '') == 'init_hailo_models')
     calls = []
     scope = dict(HAS_HAILO=True, hailo_release_device=lambda:None,

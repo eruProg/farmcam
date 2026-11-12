@@ -116,8 +116,9 @@ def analyse(directory: Path, show: bool = False) -> None:
     print(f"    PER_CLASS_THRESHOLDS  = {config.PER_CLASS_THRESHOLDS}")
     print(f"    SIGMA_MAX (skin)      = {config.SIGMA_MAX}")
     print(f"    GREEN_RATIO_MIN       = {config.GREEN_RATIO_MIN}")
-    print(f"    BRIGHT_V_MIN          = {config.BRIGHT_V_MIN}")
-    print(f"    DARK_S_MAX            = {config.DARK_S_MAX}")
+    print(f"    WF_PALE_V/S/FRAC      = {config.WF_PALE_V_MIN} / {config.WF_PALE_S_MAX} / {config.WF_PALE_FRAC_MIN}")
+    print(f"    FUNGUS_LEAF_GREEN_MIN = {config.FUNGUS_LEAF_GREEN_MIN}")
+    print(f"    FUNGUS_WORM_OVERLAP   = {config.FUNGUS_WORM_OVERLAP} (worm hints >= {config.WORM_HINT_MIN_CONF})")
     print(f"    PER_CLASS_SIZE        = {config.PER_CLASS_SIZE}")
     print(f"\n  To change: edit config.py, then re-run tune_verifier.py.\n")
 

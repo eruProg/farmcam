@@ -1,63 +1,89 @@
+import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'screens/setup_screen.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'core/background_watch.dart';
+import 'core/farmcam_controller.dart';
+import 'core/models.dart';
+import 'core/theme.dart';
+import 'screens/connect_screen.dart';
+import 'screens/shell.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.dark,
-    systemNavigationBarColor: Color(0xFFFAFAF9),
-    systemNavigationBarIconBrightness: Brightness.dark,
-  ));
-  runApp(const FarmCamApp());
+  if (Platform.isAndroid) {
+    // Phone notifications run in a background service; keep them running
+    // after app updates if the farmer turned them on.
+    FlutterForegroundTask.initCommunicationPort();
+    BackgroundWatch.init();
+    unawaited(BackgroundWatch.resume().catchError((_) {}));
+  }
+  runApp(FarmCamApp());
 }
 
-// ─── shadcn/ui-inspired Design Tokens ────────────────────────────
-// Background:  #FAFAF9  (warm stone white)
-// Card:        #FFFFFF
-// Border:      #E4E4E7  (zinc-200)
-// Muted text:  #71717A  (zinc-500)
-// Foreground:  #18181B  (zinc-900)
-// Green:       #16A34A  (natural forest green — not neon)
-// Amber:       #D97706
-// Red:         #DC2626
-// ─────────────────────────────────────────────────────────────────
+/// Root: one controller for the whole app, light/dark theme, and a gate
+/// that shows the Connect screen until a Pi (or demo mode) is connected.
+class FarmCamApp extends StatefulWidget {
+  FarmCamApp({super.key, FarmCamController? controller, this.autoConnect = true})
+      : controller = controller ?? FarmCamController();
+  final FarmCamController controller;
+  final bool autoConnect;
+  @override
+  State<FarmCamApp> createState() => _FarmCamAppState();
+}
 
-class FarmCamApp extends StatelessWidget {
-  const FarmCamApp({super.key});
+class _FarmCamAppState extends State<FarmCamApp> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.start(autoConnect: widget.autoConnect);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'FarmCam',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.light,
-        scaffoldBackgroundColor: const Color(0xFFFAFAF9),
-        fontFamily: 'Inter',
-        colorScheme: const ColorScheme.light(
-          primary: Color(0xFF18181B),
-          secondary: Color(0xFF71717A),
-          surface: Color(0xFFFFFFFF),
-          error: Color(0xFFDC2626),
-          outline: Color(0xFFE4E4E7),
-          surfaceContainerHighest: Color(0xFFF4F4F5),
-        ),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFFFAFAF9),
-          elevation: 0,
-          scrolledUnderElevation: 0,
-          foregroundColor: Color(0xFF18181B),
-          iconTheme: IconThemeData(color: Color(0xFF18181B)),
-        ),
-        dividerTheme: const DividerThemeData(
-          color: Color(0xFFE4E4E7),
-          thickness: 1,
+    final controller = widget.controller;
+    return FarmCamScope(
+      controller: controller,
+      child: ValueListenableBuilder<ThemeMode>(
+        valueListenable: controller.themeMode,
+        builder: (context, mode, _) => MaterialApp(
+          title: 'FarmCam',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light(),
+          darkTheme: AppTheme.dark(),
+          themeMode: mode,
+          home: const _Gate(),
         ),
       ),
-      home: const SetupScreen(),
+    );
+  }
+}
+
+/// Connect screen until the first successful connection; after that the
+/// app stays in the Shell (a banner handles reconnecting).
+class _Gate extends StatelessWidget {
+  const _Gate();
+  @override
+  Widget build(BuildContext context) {
+    final controller = FarmCamScope.of(context);
+    return ValueListenableBuilder<LinkInfo>(
+      valueListenable: controller.link,
+      builder: (context, link, _) => ValueListenableBuilder<AppSnapshot?>(
+        valueListenable: controller.snapshot,
+        builder: (context, snap, _) {
+          final inApp = link.isOnline || (snap != null && link.state != LinkState.idle);
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: inApp ? const Shell(key: ValueKey('shell')) : const ConnectScreen(key: ValueKey('connect')),
+          );
+        },
+      ),
     );
   }
 }

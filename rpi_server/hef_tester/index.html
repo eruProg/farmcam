@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FarmCam HEF Bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #f3f5f0; --panel: #ffffff; --panel-2: #eef1ea; --line: #d9dfd2; --fg: #1d2419; --muted: #5d6a56;
+  --accent: #2f7d32; --accent-fg: #ffffff; --wf: #c99700; --wf-fill: rgba(242,194,48,.18); --worm: #d8431f;
+  --fungus: #b4378f; --truth: #1f7fc2; --reject: #8b9585; --ok: #2f7d32; --warn: #b4570b; --bad: #c0392b; --shadow: 0 1px 2px rgba(20,30,15,.06), 0 4px 16px rgba(20,30,15,.05);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11150f; --panel: #181e15; --panel-2: #1f271b; --line: #2d3828; --fg: #e5ecdf; --muted: #9aa893;
+  --accent: #6cc070; --accent-fg: #0d1a0d; --wf: #f2c230; --wf-fill: rgba(242,194,48,.16); --worm: #ff6a45;
+  --fungus: #f06ad0; --truth: #59b7f5; --reject: #77836f; --ok: #6cc070; --warn: #f0a050; --bad: #ff7b6b; --shadow: none; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #11150f; --panel: #181e15; --panel-2: #1f271b; --line: #2d3828; --fg: #e5ecdf; --muted: #9aa893;
+  --accent: #6cc070; --accent-fg: #0d1a0d; --wf: #f2c230; --wf-fill: rgba(242,194,48,.16); --worm: #ff6a45;
+  --fungus: #f06ad0; --truth: #59b7f5; --reject: #77836f; --ok: #6cc070; --warn: #f0a050; --bad: #ff7b6b; --shadow: none; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 "IBM Plex Sans", system-ui, "Segoe UI", sans-serif; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px max(16px, env(safe-area-inset-left, 0px)); border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
+header h1 span { color: var(--accent); }
+.spec { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 500 12px/1 "IBM Plex Mono", ui-monospace, monospace; padding: 6px 8px; border-radius: 6px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+.chip.live { color: var(--ok); } .chip.wait { color: var(--warn); } .chip.err { color: var(--bad); }
+.theme { margin-left: auto; }
+button, select { font: inherit; color: inherit; }
+.btn { border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
+.layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 16px; padding: 16px max(16px, env(safe-area-inset-right, 0px)) 32px max(16px, env(safe-area-inset-left, 0px)); align-items: start; }
+@media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.card h2 { margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+aside { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+.drop { border: 2px dashed var(--line); border-radius: 10px; padding: 22px 12px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+.drop:hover, .drop.over { border-color: var(--accent); background: var(--panel-2); }
+.drop strong { display: block; font-size: 15px; }
+.drop small { color: var(--muted); }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row label { color: var(--muted); }
+select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+
+.slider { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; }
+.slider .name { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.slider input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.slider .val { font: 500 13px "IBM Plex Mono", ui-monospace, monospace; }
+.slider .hint { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.toggle input { accent-color: var(--accent); }
+
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.filters button { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+.filters button.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.samples { max-height: 340px; overflow: auto; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; }
+.samples button { all: unset; display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 12px; }
+.samples button:hover { background: var(--panel-2); }
+.samples .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); }
+.count { font: 500 11px "IBM Plex Mono", ui-monospace, monospace; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.count.wf { background: var(--wf-fill); color: var(--wf); }
+.count.worm { background: color-mix(in srgb, var(--worm) 14%, transparent); color: var(--worm); }
+.count.fungus { background: color-mix(in srgb, var(--fungus) 14%, transparent); color: var(--fungus); }
+.count.none { color: var(--muted); }
+
+.queue { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.queue:empty::before { content: "Results appear here. Drop photos on the left, or pick a labelled test photo."; color: var(--muted); }
+.thumb { flex: 0 0 auto; width: 112px; border: 2px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; background: var(--panel-2); position: relative; padding: 0; }
+.thumb.sel { border-color: var(--accent); }
+.thumb img { width: 100%; height: 72px; object-fit: cover; display: block; }
+.thumb .cap { display: flex; gap: 4px; padding: 4px; flex-wrap: wrap; min-height: 26px; align-items: center; }
+.thumb .busy { height: 72px; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+
+.viewer { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; }
+@media (max-width: 1200px) { .viewer { grid-template-columns: minmax(0, 1fr); } }
+.stage { position: relative; background: #0b0d0a; border-radius: 10px; overflow: hidden; min-height: 200px; display: grid; place-items: center; }
+.stage canvas { display: block; width: 100%; height: auto; cursor: zoom-in; }
+.stage .empty { color: #9aa893; padding: 60px 20px; text-align: center; }
+.verdict { font-size: 18px; font-weight: 600; text-wrap: balance; }
+.verdict.pest { color: var(--bad); } .verdict.clean { color: var(--ok); }
+.meta { color: var(--muted); font-size: 12px; }
+.closeup { width: 100%; aspect-ratio: 1; max-width: 100%; border-radius: 8px; background: #0b0d0a; display: block; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td.n { text-align: right; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.dets { display: flex; flex-direction: column; max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.det { all: unset; display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 13px; }
+.det:hover, .det.sel { background: var(--panel-2); }
+.det .why { grid-column: 2 / -1; color: var(--muted); font-size: 12px; }
+.det.out { opacity: .7; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.line { width: 18px; height: 0; border-top: 2px solid; display: inline-block; }
+.error { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>FarmCam <span>HEF Bench</span></h1>
+  <div class="spec" id="spec"><span class="chip wait" id="status">Loading Hailo model…</span></div>
+  <button class="btn theme" id="themeBtn" title="Switch light / dark">◐ Theme</button>
+</header>
+
+<div class="layout">
+  <aside>
+    <section class="card">
+      <h2>Test your photos</h2>
+      <div class="drop" id="drop" tabindex="0" role="button">
+        <strong>Drop photos here</strong>
+        <small>or click to choose JPG / PNG files. Several at once is fine.</small>
+      </div>
+      <input type="file" id="file" accept="image/*" multiple hidden>
+      <div class="row">
+        <label for="colour">Colours</label>
+        <select id="colour">
+          <option value="auto">Auto (fix old auto_default photos)</option>
+          <option value="off">Use as they are</option>
+          <option value="swap">Swap red ↔ blue</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Minimum confidence</h2>
+      <div class="slider">
+        <span class="name"><i class="swatch" style="background:var(--wf)"></i>Whitefly</span><span class="val" id="wfVal">0.60</span>
+        <input type="range" id="wfMin" min="0.40" max="0.95" step="0.01" value="0.60">
+        <span class="hint" id="wfHint">Pi setting 0.60</span>
+      </div>
+      <div class="slider">
+        <span class="name"><i class="swatch" style="background:var(--worm)"></i>Worm</span><span class="val" id="wormVal">0.65</span>
+        <input type="range" id="wormMin" min="0.25" max="0.95" step="0.01" value="0.65">
+        <span class="hint" id="wormHint">Pi setting 0.65</span>
+      </div>
+      <div class="slider" id="fungusSlider" hidden>
+        <span class="name"><i class="swatch" style="background:var(--fungus)"></i>Fungus</span><span class="val" id="fungusVal">0.40</span>
+        <input type="range" id="fungusMin" min="0.10" max="0.95" step="0.01" value="0.40">
+        <span class="hint" id="fungusHint">Pi setting 0.40</span>
+      </div>
+      <div class="row"><button class="btn" id="resetMin">Back to Pi settings</button></div>
+      <label class="toggle"><input type="checkbox" id="showRejected"> Show rejected candidates (grey)</label>
+      <label class="toggle"><input type="checkbox" id="showTruth" checked> Show my labels (dashed blue)</label>
+    </section>
+
+    <section class="card">
+      <h2>Labelled test photos <span id="sampleCount"></span></h2>
+      <div class="filters" id="filters">
+        <button data-f="all" class="on">All</button><button data-f="wf">Whiteflies</button>
+        <button data-f="worm">Worms</button><button data-f="fungus">Fungus</button><button data-f="clean">Clean</button>
+      </div>
+      <div class="samples" id="samples"></div>
+      <div class="row"><button class="btn" id="runVisible">Run all shown</button><span class="meta" id="runNote"></span></div>
+    </section>
+  </aside>
+
+  <main>
+    <section class="card">
+      <h2>Results</h2>
+      <div class="queue" id="queue"></div>
+    </section>
+
+    <section class="viewer">
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <div class="verdict" id="verdict">No photo yet</div>
+          <div class="meta" id="imgMeta"></div>
+        </div>
+        <div class="stage" id="stage"><div class="empty">Click the photo to zoom in. Whiteflies are only 7–13 pixels at 50 cm.</div></div>
+        <div class="legend">
+          <span><i class="line" style="border-color:var(--wf)"></i>Whitefly (counted)</span>
+          <span><i class="line" style="border-color:var(--worm)"></i>Worm (counted)</span>
+          <span><i class="line" style="border-color:var(--fungus)"></i>Fungus (counted, outline)</span>
+          <span><i class="line" style="border-color:var(--truth);border-top-style:dashed"></i>Your label</span>
+          <span><i class="line" style="border-color:var(--reject);border-top-style:dashed"></i>Rejected</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+        <section class="card">
+          <h2>Close-up ×4</h2>
+          <canvas class="closeup" id="closeup" width="320" height="320"></canvas>
+          <div class="meta" id="closeMeta">Click the photo or a detection.</div>
+        </section>
+        <section class="card" id="scoreCard" hidden>
+          <h2>Against your labels</h2>
+          <table id="score"></table>
+        </section>
+        <section class="card">
+          <h2>Detections</h2>
+          <div class="dets" id="dets"><div class="meta" style="padding:8px">None yet.</div></div>
+        </section>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const LABEL = { whiteflies: "Whitefly", worm: "Worm", fungus: "Fungus" };
+const COLOR = { whiteflies: "--wf", worm: "--worm", fungus: "--fungus" };
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+let info = null, items = [], selected = null, focus = null, samples = [], filter = "all", nextId = 1;
+const minimums = () => ({ whiteflies: +$("wfMin").value, worm: +$("wormMin").value, fungus: +$("fungusMin").value });
+
+// ---- theme (per-viewer convenience only)
+(function initTheme() {
+  try { const t = localStorage.getItem("hefTheme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  $("themeBtn").onclick = () => {
+    const dark = document.documentElement.dataset.theme
+      ? document.documentElement.dataset.theme === "dark"
+      : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem("hefTheme", document.documentElement.dataset.theme); } catch (e) {}
+    draw();
+  };
+})();
+
+// ---- server status
+async function poll() {
+  try {
+    info = await (await fetch("/api/info")).json();
+    const s = $("status");
+    if (info.error) { s.className = "chip err"; s.textContent = "Model failed: " + info.error; return; }
+    if (!info.ready) { s.className = "chip wait"; s.textContent = "Loading Hailo model… (about a minute)"; setTimeout(poll, 2000); return; }
+    s.className = "chip live"; s.textContent = "● Ready";
+    $("spec").innerHTML = "";
+    $("spec").append(s);
+    const chips = [info.model, info.seg_model || "no fungus model loaded", "Hailo-8L 8-bit emulation", "1280×960 frame",
+      info.regions + " SAHI regions", "pest model: " + info.pest_model, "fungus model: " + info.fungus_model];
+    for (const t of chips) {
+      const c = document.createElement("span"); c.className = "chip"; c.textContent = t; $("spec").append(c);
+    }
+    for (const [n, id] of [["whiteflies", "wf"], ["worm", "worm"], ["fungus", "fungus"]]) {
+      $(id + "Hint").textContent = `Pi setting ${info.minimums[n].toFixed(2)} · model reports from ${info.floors[n].toFixed(2)}`;
+      $(id + "Min").min = info.floors[n];
+    }
+    $("fungusSlider").hidden = !info.seg_model;
+    if (!poll.done) { setMin(info.minimums); poll.done = true; }
+    pump();
+  } catch (e) { $("status").className = "chip err"; $("status").textContent = "Tester not running"; setTimeout(poll, 3000); }
+}
+function setMin(m) { $("wfMin").value = m.whiteflies; $("wormMin").value = m.worm; $("fungusMin").value = m.fungus; onMin(); }
+function onMin() {
+  for (const id of ["wf", "worm", "fungus"]) $(id + "Val").textContent = (+$(id + "Min").value).toFixed(2);
+  renderQueue(); renderSelected();
+}
+$("wfMin").oninput = onMin; $("wormMin").oninput = onMin; $("fungusMin").oninput = onMin;
+$("resetMin").onclick = () => info && setMin(info.minimums);
+$("showRejected").onchange = () => renderSelected();
+$("showTruth").onchange = () => renderSelected();
+
+// ---- classification of one detection under the current minimums
+const REASONS = [
+  [/^area_.*_lt_/, (n) => `too small to be a ${n}`],
+  [/^area_.*_gt_/, (n) => `too big: larger than a ${n} can look at 50 cm`],
+  [/^ar_/, () => "wrong shape (too long and thin, or too wide)"],
+  [/^hand_in_frame/, () => "a hand is in the frame"],
+  [/^skin/, () => "skin-coloured"],
+  [/^ring_empty|^green_lt/, () => "not on a leaf (no green around it)"],
+  [/^pale_/, () => "not white enough for a whitefly"],
+  [/^contrast_/, () => "does not stand out from the leaf"],
+  [/^glare/, () => "glare / reflection"],
+  [/^offleaf_/, () => "not inside the plant (background)"],
+  [/^leaf_/, () => "no leaf around it"],
+  [/^worm_overlap/, () => "it is a worm, not fungus (worm check)"],
+  [/^fungus_alone/, () => "only one fungus spot in the frame (the Pi needs at least 2)"],
+  [/^dirt$/, () => "dirt / fly droppings (learned as not fungus)"],
+  [/^worm_offplant/, () => "not on the lettuce (background), so not a worm"],
+];
+// The Pi's FUNGUS_MIN_PER_FRAME: fungus counts only with enough spots in the frame.
+function judge(d, r) {
+  const j = judgeOne(d);
+  const need = (info && info.fungus_min_per_frame) || 1;
+  if (j.kept && d.name === "fungus" && r && need > 1) {
+    const n = r.detections.filter((x) => x.name === "fungus" && judgeOne(x).kept).length;
+    if (n < need) return { kept: false, why: `only ${n} fungus spot in the frame (the Pi needs at least ${need})` };
+  }
+  return j;
+}
+function judgeOne(d) {
+  if (d.reason) {
+    const hit = REASONS.find(([re]) => re.test(d.reason));
+    return { kept: false, why: (hit ? hit[1](LABEL[d.name]?.toLowerCase() || d.name) : "rejected") + ` [${d.reason}]` };
+  }
+  const min = minimums()[d.name];
+  if (min !== undefined && d.conf < min) return { kept: false, why: `confidence ${d.conf.toFixed(2)} is below the minimum ${min.toFixed(2)}` };
+  return { kept: true, why: "counted" };
+}
+
+// ---- matching against labels (same rule as evaluate.py)
+function iou(a, b) {
+  const ix = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), iy = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+  const inter = ix * iy, union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter;
+  return union > 0 ? inter / union : 0;
+}
+const inside = (a, b, pad) => { const cx = (a[0] + a[2]) / 2, cy = (a[1] + a[3]) / 2; return b[0] - pad <= cx && cx <= b[2] + pad && b[1] - pad <= cy && cy <= b[3] + pad; };
+const same = (name, d, g) => name === "worm" ? iou(d, g) >= 0.5
+  : name === "fungus" ? (iou(d, g) >= 0.3 || inside(d, g, 0) || inside(g, d, 0))
+  : (iou(d, g) >= 0.3 || inside(d, g, 4) || inside(g, d, 4));
+function score(result) {
+  const rows = {};
+  const names = (result.truth || []).some((g) => g.name === "fungus") || result.truth_coverage !== null && result.truth_coverage !== undefined
+    ? ["fungus", "worm"] : ["whiteflies", "worm"];
+  for (const name of names) {
+    const gts = (result.truth || []).filter((g) => g.name === name);
+    const kept = result.detections.filter((d) => d.name === name && judge(d, result).kept).sort((a, b) => b.conf - a.conf);
+    const used = new Set(); let tp = 0, fp = 0;
+    for (const d of kept) {
+      const i = gts.findIndex((g, k) => !used.has(k) && same(name, d.box, g.box));
+      if (i < 0) fp++; else { used.add(i); tp++; }
+    }
+    rows[name] = { labelled: gts.length, found: tp, falseAlarms: fp, missed: gts.length - used.size };
+  }
+  return rows;
+}
+const keptCounts = (r) => ({
+  whiteflies: r.detections.filter((d) => d.name === "whiteflies" && judge(d, r).kept).length,
+  worm: r.detections.filter((d) => d.name === "worm" && judge(d, r).kept).length,
+  fungus: r.detections.filter((d) => d.name === "fungus" && judge(d, r).kept).length });
+// detect_loop's fungus coverage: mask pixels, else the box area; severity as compute_severity_info.
+function coverage(r) {
+  let px = 0;
+  for (const d of r.detections) if (d.name === "fungus" && judge(d, r).kept)
+    px += d.mask_px > 0 ? d.mask_px : (d.box[2] - d.box[0]) * (d.box[3] - d.box[1]);
+  return Math.min(100, 100 * px / (r.width * r.height));
+}
+function severity(pct) {
+  const s = info ? info.severity : { medium: 5, high: 15 };
+  return pct >= s.high ? "high" : pct >= s.medium ? "medium" : pct > 0 ? "low" : "none";
+}
+
+// ---- inputs
+$("drop").onclick = () => $("file").click();
+$("drop").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } };
+$("file").onchange = (e) => { addFiles(e.target.files); e.target.value = ""; };
+for (const ev of ["dragenter", "dragover"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("over"); });
+for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("over"); });
+$("drop").addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
+document.addEventListener("dragover", (e) => e.preventDefault());
+document.addEventListener("drop", (e) => { if (!$("drop").contains(e.target)) { e.preventDefault(); addFiles(e.dataTransfer.files); } });
+
+function addFiles(files) {
+  for (const f of files) if (f.type.startsWith("image/") || /\.(jpe?g|png|bmp|webp)$/i.test(f.name))
+    items.push({ id: nextId++, kind: "file", file: f, name: f.name, colour: $("colour").value, status: "queued" });
+  renderQueue(); pump();
+}
+function addSample(name, set) {
+  const existing = items.find((i) => i.kind === "sample" && i.name === name && (!set || i.set === set));
+  if (existing) { select(existing.id); return; }
+  items.push({ id: nextId++, kind: "sample", name, set: set || samples.find((s) => s.name === name)?.set, status: "queued" });
+  renderQueue(); pump();
+}
+
+let running = false;
+async function pump() {
+  if (running || !info || !info.ready) return;
+  const item = items.find((i) => i.status === "queued");
+  if (!item) return;
+  running = true; item.status = "running"; renderQueue();
+  try {
+    const res = item.kind === "file"
+      ? await fetch(`/api/detect?name=${encodeURIComponent(item.name)}&colour=${item.colour}`, { method: "POST", body: item.file })
+      : await fetch(`/api/sample?name=${encodeURIComponent(item.name)}${item.set ? "&set=" + encodeURIComponent(item.set) : ""}`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || res.statusText);
+    item.result = body; item.status = "done";
+    item.img = await new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = body.image; });
+    if (selected === null || items.find((i) => i.id === selected)?.status !== "done") select(item.id);
+  } catch (e) { item.status = "error"; item.error = String(e.message || e); if (selected === null) select(item.id); }
+  running = false; renderQueue(); if (item.id === selected) renderSelected(); pump();
+}
+
+// ---- samples list
+async function loadSamples() {
+  try { samples = await (await fetch("/api/samples")).json(); } catch (e) { samples = []; }
+  $("sampleCount").textContent = `(${samples.length})`; renderSamples();
+}
+function shownSamples() {
+  return samples.filter((s) => filter === "all" || (filter === "wf" && s.whiteflies) || (filter === "worm" && s.worm)
+    || (filter === "fungus" && s.fungus) || (filter === "clean" && !s.whiteflies && !s.worm && !s.fungus));
+}
+function renderSamples() {
+  const box = $("samples"); box.innerHTML = "";
+  for (const s of shownSamples()) {
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="fname"></span><span class="row" style="gap:4px;flex-wrap:nowrap">${badges(s)}</span>`;
+    b.querySelector(".fname").textContent = s.name; b.title = `${s.set} / ${s.split}: ${s.name}`;
+    b.onclick = () => addSample(s.name, s.set); box.append(b);
+  }
+  if (!box.children.length) box.innerHTML = `<div class="meta" style="padding:8px">No photos in this group.</div>`;
+}
+function badges(c) {
+  const out = [];
+  if (c.whiteflies) out.push(`<span class="count wf">${c.whiteflies} WF</span>`);
+  if (c.worm) out.push(`<span class="count worm">${c.worm} worm</span>`);
+  if (c.fungus) out.push(`<span class="count fungus">${c.fungus} fungus</span>`);
+  return out.join("") || `<span class="count none">clean</span>`;
+}
+$("filters").onclick = (e) => {
+  const f = e.target.dataset.f; if (!f) return; filter = f;
+  for (const b of $("filters").children) b.classList.toggle("on", b.dataset.f === f);
+  renderSamples();
+};
+$("runVisible").onclick = () => {
+  const list = shownSamples(); for (const s of list) if (!items.find((i) => i.kind === "sample" && i.name === s.name && i.set === s.set)) items.push({ id: nextId++, kind: "sample", name: s.name, set: s.set, status: "queued" });
+  $("runNote").textContent = `${list.length} queued, about ${Math.ceil(list.length * 3 / 60)} min`;
+  renderQueue(); pump();
+};
+
+// ---- queue
+function renderQueue() {
+  const q = $("queue"); q.innerHTML = "";
+  for (const it of items) {
+    const b = document.createElement("button"); b.className = "thumb" + (it.id === selected ? " sel" : ""); b.title = it.name;
+    if (it.status === "done") {
+      const c = keptCounts(it.result);
+      b.innerHTML = `<img alt=""><div class="cap">${badges(c)}</div>`; b.querySelector("img").src = it.result.image;
+    } else {
+      b.innerHTML = `<div class="busy">${it.status === "running" ? "Detecting…" : it.status === "error" ? "Error" : "Waiting"}</div><div class="cap meta"></div>`;
+      b.querySelector(".cap").textContent = it.name.slice(0, 16);
+    }
+    b.onclick = () => select(it.id); q.append(b);
+  }
+}
+function select(id) { selected = id; focus = null; renderQueue(); renderSelected(); }
+
+// ---- main viewer
+let canvas = null;
+function renderSelected() {
+  const it = items.find((i) => i.id === selected);
+  const stage = $("stage");
+  if (!it || it.status !== "done") {
+    stage.innerHTML = `<div class="empty ${it && it.status === "error" ? "error" : ""}">${it ? (it.status === "error" ? "Could not test this photo: " + escapeHtml(it.error) : "Detecting… (about 3 s per photo)") : "Click the photo to zoom in."}</div>`;
+    $("verdict").textContent = it ? it.name : "No photo yet"; $("verdict").className = "verdict";
+    $("dets").innerHTML = ""; $("scoreCard").hidden = true; canvas = null; drawCloseup(); return;
+  }
+  const r = it.result;
+  if (!focus) {                                     // open the close-up on the strongest counted box
+    const best = r.detections.map((d, i) => ({ d, i })).filter((x) => judge(x.d, r).kept).sort((a, b) => b.d.conf - a.d.conf)[0];
+    if (best) focus = { x: (best.d.box[0] + best.d.box[2]) / 2, y: (best.d.box[1] + best.d.box[3]) / 2, det: best.i };
+  }
+  if (!canvas || canvas.dataset.id != it.id) {
+    stage.innerHTML = ""; canvas = document.createElement("canvas"); canvas.dataset.id = it.id;
+    canvas.width = r.width; canvas.height = r.height; stage.append(canvas);
+    canvas.onclick = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      focus = { x: (e.clientX - rect.left) * r.width / rect.width, y: (e.clientY - rect.top) * r.height / rect.height };
+      renderSelected();
+    };
+  }
+  const c = keptCounts(r);
+  const v = $("verdict");
+  const cov = coverage(r);
+  if (c.whiteflies || c.worm || c.fungus) {
+    v.className = "verdict pest";
+    v.textContent = [c.whiteflies && `${c.whiteflies} whitefl${c.whiteflies > 1 ? "ies" : "y"}`, c.worm && `${c.worm} worm${c.worm > 1 ? "s" : ""}`,
+      c.fungus && `fungus ${cov.toFixed(1)}% (${severity(cov)})`].filter(Boolean).join(" · ") + " found";
+  } else { v.className = "verdict clean"; v.textContent = "Clean: nothing above the minimums"; }
+  const labelled = r.truth_coverage !== null && r.truth_coverage !== undefined
+    ? ` · labelled fungus ${r.truth_coverage.toFixed(1)}% (${severity(r.truth_coverage)})` : "";
+  $("imgMeta").textContent = `${r.source} · ${r.seconds}s${r.swapped ? " · colours fixed (red↔blue)" : ""}${labelled}`;
+  draw();
+
+  // detections list
+  const list = $("dets"); list.innerHTML = "";
+  const show = r.detections.map((d, i) => ({ d, i, j: judge(d, r) })).filter((x) => x.j.kept || $("showRejected").checked)
+    .sort((a, b) => (b.j.kept - a.j.kept) || (b.d.conf - a.d.conf));
+  for (const { d, i, j } of show) {
+    const b = document.createElement("button"); b.className = "det" + (j.kept ? "" : " out") + (focus && focus.det === i ? " sel" : "");
+    const col = j.kept ? `var(${COLOR[d.name] || "--wf"})` : "var(--reject)";
+    b.innerHTML = `<i class="swatch" style="background:${col}"></i><span><b>${LABEL[d.name] || d.name}</b> <span class="mono">${d.conf.toFixed(2)}</span></span><span class="mono meta">${Math.round(d.box[2] - d.box[0])}×${Math.round(d.box[3] - d.box[1])}px</span><span class="why"></span>`;
+    b.querySelector(".why").textContent = j.why;
+    b.onclick = () => { focus = { x: (d.box[0] + d.box[2]) / 2, y: (d.box[1] + d.box[3]) / 2, det: i }; renderSelected(); };
+    list.append(b);
+  }
+  const hidden = r.detections.length - show.length;
+  if (!show.length) list.innerHTML = `<div class="meta" style="padding:8px">Nothing found.${hidden ? ` ${hidden} rejected candidate(s): tick “Show rejected”.` : ""}</div>`;
+  else if (hidden) { const n = document.createElement("div"); n.className = "meta"; n.style.padding = "8px"; n.textContent = `+ ${hidden} not counted (below the minimum or failed a check). Tick “Show rejected”.`; list.append(n); }
+
+  // score vs labels
+  if (r.truth) {
+    const s = score(r); $("scoreCard").hidden = false;
+    $("score").innerHTML = `<tr><th></th><th class="n">Labelled</th><th class="n">Found</th><th class="n">False</th><th class="n">Missed</th></tr>` +
+      Object.entries(s).map(([n, x]) => `<tr><td>${LABEL[n]}</td><td class="n">${x.labelled}</td><td class="n">${x.found}</td><td class="n" style="color:${x.falseAlarms ? "var(--bad)" : "inherit"}">${x.falseAlarms}</td><td class="n" style="color:${x.missed ? "var(--warn)" : "inherit"}">${x.missed}</td></tr>`).join("");
+  } else $("scoreCard").hidden = true;
+  drawCloseup();
+}
+
+function paint(ctx, r, scale, ox = 0, oy = 0) {
+  const lw = (w) => Math.max(1, w * scale);
+  if (r.truth && $("showTruth").checked) {
+    ctx.setLineDash([lw(5), lw(4)]); ctx.strokeStyle = css("--truth"); ctx.lineWidth = lw(2);
+    for (const g of r.truth) {
+      const [x1, y1, x2, y2] = g.box.map((v, k) => v - (k % 2 ? oy : ox));
+      if ((x2 - x1) / scale < 16) {                 // tiny label: dashed ring, bigger than a detection's
+        ctx.beginPath(); ctx.arc((x1 + x2) / 2, (y1 + y2) / 2, lw(20), 0, Math.PI * 2); ctx.stroke();
+      } else ctx.strokeRect(x1 - lw(3), y1 - lw(3), x2 - x1 + lw(6), y2 - y1 + lw(6));
+    }
+  }
+  const order = r.detections.map((d) => ({ d, j: judge(d, r) })).sort((a, b) => a.j.kept - b.j.kept);
+  for (const { d, j } of order) {
+    if (!j.kept && !$("showRejected").checked) continue;
+    const [x1, y1, x2, y2] = d.box.map((v, k) => v - (k % 2 ? oy : ox));
+    const col = j.kept ? css(COLOR[d.name] || "--wf") : css("--reject");
+    ctx.setLineDash(j.kept ? [] : [lw(4), lw(3)]); ctx.strokeStyle = col; ctx.lineWidth = lw(j.kept ? 2.5 : 1.5);
+    if (d.name === "fungus" && d.poly && d.poly.length > 2) {   // the mask outline the Pi measures coverage from
+      ctx.beginPath(); d.poly.forEach(([px, py], k) => k ? ctx.lineTo(px - ox, py - oy) : ctx.moveTo(px - ox, py - oy));
+      ctx.closePath(); ctx.stroke();
+      if (j.kept) { ctx.globalAlpha = 0.22; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1; }
+    } else ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    if (j.kept && d.name === "whiteflies" && (x2 - x1) / scale < 16) {   // tiny whitefly: add a ring so it can be seen
+      ctx.beginPath(); ctx.arc((x1 + x2) / 2, (y1 + y2) / 2, lw(14), 0, Math.PI * 2); ctx.stroke();
+    }
+    if (j.kept) {
+      const text = `${{ worm: "WORM", fungus: "FUNGUS" }[d.name] || "WF"} ${d.conf.toFixed(2)}`;
+      ctx.setLineDash([]); ctx.font = `600 ${lw(13)}px "IBM Plex Mono", monospace`;
+      const tw = ctx.measureText(text).width, th = lw(17), ty = y1 - th - lw(4) < 0 ? y2 + lw(4) : y1 - th - lw(4);
+      ctx.fillStyle = col; ctx.fillRect(x1, ty, tw + lw(8), th);
+      ctx.fillStyle = "#111"; ctx.fillText(text, x1 + lw(4), ty + th - lw(4));
+    }
+  }
+  ctx.setLineDash([]);
+}
+function draw() {
+  const it = items.find((i) => i.id === selected);
+  if (!canvas || !it || !it.img) return;
+  const ctx = canvas.getContext("2d"), r = it.result;
+  ctx.drawImage(it.img, 0, 0);
+  const scale = r.width / (canvas.getBoundingClientRect().width || r.width);
+  paint(ctx, r, scale);
+  if (focus) { ctx.strokeStyle = "#fff"; ctx.lineWidth = scale; ctx.strokeRect(focus.x - 40, focus.y - 40, 80, 80); }
+}
+function drawCloseup() {
+  const cv = $("closeup"), ctx = cv.getContext("2d");
+  ctx.fillStyle = "#0b0d0a"; ctx.fillRect(0, 0, cv.width, cv.height);
+  const it = items.find((i) => i.id === selected);
+  if (!it || !it.img || !focus) { $("closeMeta").textContent = "Click the photo or a detection."; return; }
+  const zoom = 4, size = cv.width / zoom, x0 = focus.x - size / 2, y0 = focus.y - size / 2;
+  ctx.save(); ctx.scale(zoom, zoom); ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(it.img, x0, y0, size, size, 0, 0, size, size);
+  paint(ctx, it.result, 1 / zoom, x0, y0);
+  ctx.restore();
+  $("closeMeta").textContent = `Around x ${Math.round(focus.x)}, y ${Math.round(focus.y)} (80×80 px of the 1280×960 frame)`;
+}
+window.addEventListener("resize", () => draw());
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { draw(); drawCloseup(); });
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+poll(); loadSamples();
+// ?sample=<file name> opens that labelled photo straight away
+const startSample = new URLSearchParams(location.search).get("sample");
+if (startSample) { addSample(startSample); focus = null; }
+</script>
+</body>
+</html>

@@ -42,8 +42,18 @@
       <span>Pump <strong id="pump">Unavailable</strong></span>
       <span>Buzzer <strong id="buzzer">Unavailable</strong></span>
       <span>SMS <strong id="sms">Unavailable</strong></span>
+      <span>ESP32 <strong id="esp32">Unavailable</strong></span>
       <span id="update-time" class="update-time">Local monitoring</span>
     </footer>
   </main>
+  <!-- Full-screen pop-up while spraying pesticide or moving to a lettuce. -->
+  <div id="activity" class="activity" role="alert" aria-live="assertive" hidden>
+    <div class="activity-content">
+      <svg id="activity-icon-spray" class="activity-icon" viewBox="0 0 48 48" aria-hidden="true" hidden><path d="M24 7c6 8.5 10 14 10 20a10 10 0 0 1-20 0c0-6 4-11.5 10-20z"/><path d="M10 9c2 3 3.5 5 3.5 7a3.5 3.5 0 0 1-7 0c0-2 1.5-4 3.5-7zM38 9c2 3 3.5 5 3.5 7a3.5 3.5 0 0 1-7 0c0-2 1.5-4 3.5-7z"/></svg>
+      <svg id="activity-icon-moving" class="activity-icon" viewBox="0 0 48 48" aria-hidden="true" hidden><path d="M7 24h32M27 12l12 12-12 12"/></svg>
+      <h2 id="activity-title"></h2>
+      <p id="activity-body"></p>
+    </div>
+  </div>
 </body>
 </html>

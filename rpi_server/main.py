@@ -19,6 +19,9 @@ RUN:
 """
 
 import json
+import queue
+import re
+import shutil
 import subprocess
 import time
 import threading
@@ -31,7 +34,8 @@ import traceback
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, Response, Query
+from typing import Optional
+from fastapi import Body, FastAPI, Response, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -55,7 +59,7 @@ except ImportError:
     print("⚠  pyserial not found — Arduino buzzer disabled")
 
 try:
-    from picamera2 import Picamera2
+    from picamera2 import MappedArray, Picamera2
     HAS_CAMERA = True
 except ImportError:
     HAS_CAMERA = False
@@ -159,6 +163,31 @@ def get_dataset_base_path():
 
 DATASET_BASE = get_dataset_base_path()
 print(f"📁 DATASET_BASE: {DATASET_BASE}")
+# Dataset photos taken from the app go next to it: on the external SSD when one
+# is mounted ("<SSD>/New Datasets/FarmCam captures"), otherwise ~/New Datasets
+# on the SD card. FARMCAM_CAPTURE_DIR overrides.
+config.CAPTURE_DIR = Path(os.environ.get("FARMCAM_CAPTURE_DIR") or DATASET_BASE / "FarmCam captures")
+
+
+def storage_state():
+    """Where dataset photos are saved, whether that is an external drive, free space."""
+    path = Path(config.CAPTURE_DIR)
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    mount = probe.resolve()
+    while not os.path.ismount(str(mount)) and mount != mount.parent:
+        mount = mount.parent
+    on_ssd = mount.parts[1:2] in (("media",), ("mnt",)) and len(mount.parts) > 2
+    try:
+        free_gb = round(shutil.disk_usage(str(probe)).free / 1e9, 1)
+    except OSError:
+        free_gb = None
+    return {"path": str(path), "on_ssd": bool(on_ssd), "free_gb": free_gb}
+
+
+print(f"📸 Dataset captures: {config.CAPTURE_DIR} "
+      f"({'external SSD' if storage_state()['on_ssd'] else 'SD card: no SSD found'})")
 
 # Prefer local models/ next to this script (as shown in your screenshot)
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -176,13 +205,23 @@ except Exception as e:
 # Configuration
 # ---------------------------------------------------------------------------
 SERVER_PORT = 8000
-SERVER_BUILD = "2026-10-17-display-relay-diagnostics-1"
+SERVER_BUILD = "2026-10-22-detection-accuracy-2"
 VIEWER_PORT = 8080
 BUZZER_PIN = 17
 PUMP_PIN = 27
 PUMP_DURATION = 3.0
 
 ESP32_IP = os.environ.get("FARMCAM_ESP32_IP", "10.229.135.161")
+# Without an explicit FARMCAM_ESP32_IP, start from the address the ESP32 was
+# last found at (esp32_discovery saves it when the hotspot hands out new IPs).
+if "FARMCAM_ESP32_IP" not in os.environ:
+    from esp32_discovery import Esp32Monitor as _Esp32Monitor
+    ESP32_IP = _Esp32Monitor.load_saved(config.ESP32_SAVED_IP) or ESP32_IP
+config.ESP32_IP = ESP32_IP
+
+# PC test mode: fake camera from rpi_server/pictures, no Hailo, simulated ESP32.
+# Needs FARMCAM_DEV=1 AND no Hailo device, so it can never switch on on the Pi.
+DEV_MODE = os.environ.get("FARMCAM_DEV") == "1" and not Path("/dev/hailo0").exists()
 ESP32_PORT = 80
 FARMER_PHONE = config.FARMER_PHONE
 SIM800L_PHONE = config.SIM_PHONE
@@ -212,7 +251,7 @@ LAST_PUMP_FILE = str(SCRIPT_DIR / "last_pump_time.txt")
 SMS_COOLDOWN_SECS = config.SMS_COOLDOWN_S
 
 # Dual model class names
-SEG_CLASS_NAMES = ["fungus"]
+SEG_CLASS_NAMES = list(getattr(config, "SEG_CLASS_NAMES", ["fungus"]))   # ["fungus", "dirt"] for FUNGUS_MODEL=natural2
 DETECT_CLASS_NAMES = ["whiteflies", "worm"]
 CLASS_NAMES = ["fungus", "whiteflies", "worm"]
 NUM_CLASSES = 3
@@ -226,6 +265,28 @@ DETECTION_INTERVAL = 0.10
 # Full frame plus four overlapping crops, merged before temporal confirmation.
 # Disable on slower hardware with FARMCAM_SMALL_OBJECT_TILES=0.
 SMALL_OBJECT_TILES = os.environ.get("FARMCAM_SMALL_OBJECT_TILES", "1") == "1"
+# Colour order the MODELS were trained on. An old capture path reversed red and
+# blue, so camera-captured training images are "swapped" (teal leaves, blue
+# worms), while the whitefly images came from a natural-colour source.
+#   "split"   - each class gets the colours its training images had (default)
+#   "swapped" / "natural" - one pass per model in that colour order
+# Set FARMCAM_MODEL_COLORS=natural after retraining on colour-fixed images.
+MODEL_COLOR_ORDER = os.environ.get("FARMCAM_MODEL_COLORS", "split")
+# (model label, colour order, classes kept, full frame only). Measured on the
+# offline photos: worms 86% swapped vs missed natural; real whiteflies 64-69%
+# natural vs missed swapped. Worms already come from the full frame only, so
+# the extra worm pass costs one inference per frame.
+# The retrained pest model (config.PEST_MODEL "natural") saw natural colours
+# for both classes, so it needs one DET pass. The SEG pass follows
+# config.FUNGUS_MODEL the same way.
+SPLIT_COLOR_PASSES = [
+    ("SEG", "natural" if getattr(config, "FUNGUS_NATURAL", False) else "swapped", None, False),
+    ("DET", "natural", None, False),
+] if config.PEST_MODEL == "natural" else [
+    ("SEG", "natural" if getattr(config, "FUNGUS_NATURAL", False) else "swapped", None, False),
+    ("DET", "natural", ("whiteflies", "whitefly"), False),
+    ("DET", "swapped", ("worm",), True),
+]
 CONFIDENCE_THRESHOLD = 0.35          # fallback for classes without an override
 NMS_IOU_THRESHOLD = 0.45
 REG_MAX = 16
@@ -249,8 +310,16 @@ PER_CLASS_THRESHOLDS = {
     "fungus": 0.28,
     "whitefly": 0.40,
     "whiteflies": 0.40,
-    "worm": 0.45,
+    # Raw candidate floor only. verifier.py still needs config 0.45 to COUNT a
+    # worm; 0.25-0.45 worms are used to cancel fungus boxes on the same spot
+    # (the fungus-only SEG model scores worms as fungus).
+    "worm": 0.25,
 }
+
+if Path(config.WF_CLS_MODEL).is_file():
+    # The whitefly classifier decides: let weaker (blurry) candidates reach it.
+    for _name in ("whitefly", "whiteflies"):
+        PER_CLASS_THRESHOLDS[_name] = min(PER_CLASS_THRESHOLDS[_name], config.WF_STAGE1_MIN)
 
 SEV_PEST_HIGH = 3
 SEV_PEST_MEDIUM = 1
@@ -343,6 +412,10 @@ manual_pump_heartbeat = 0.0     # last heartbeat timestamp
 MANUAL_PUMP_TIMEOUT = 2.0      # auto-off if no heartbeat in this many seconds
 manual_control_lock = threading.Lock()
 manual_pump_generation = 0
+# The full-screen "Spraying pesticide" pop-up (HDMI monitor + app) stays this
+# long after a spray starts: a 2.5 s spray would otherwise fall between polls.
+SPRAY_POPUP_S = 8.0
+_spray_shown_until = 0.0
 
 # ---------------------------------------------------------------------------
 # Hailo multi-model state (SHARED VDevice)
@@ -660,6 +733,13 @@ def _configure_one_hef(label, path, class_names):
                   f"range=[{getattr(quant, 'limvals_min', '?')}, {getattr(quant, 'limvals_max', '?')}]")
         for o in out_info:
             print(f"   Output: {o.name} shape={o.shape}")
+        # Class-score heads have one channel per class (box heads 64, mask 32).
+        score_channels = {int(o.shape[-1]) for o in out_info
+                          if len(o.shape) == 3 and int(o.shape[0]) in (20, 40, 80)
+                          and int(o.shape[-1]) not in (64, 32)}
+        if score_channels and score_channels != {len(class_names)}:
+            print(f"❌ {label}: {path.name} has {sorted(score_channels)} class(es) but the server expects "
+                  f"{len(class_names)} {class_names}. Check FARMCAM_FUNGUS_MODEL / FARMCAM_PEST_MODEL.")
         return {
             "label": label,
             "path": str(path),
@@ -1313,6 +1393,21 @@ def _mask_to_polygon_and_area(proto, coeffs, x1, y1, x2, y2, img_w, img_h):
 # ---------------------------------------------------------------------------
 # Inference helpers
 # ---------------------------------------------------------------------------
+def _unletterbox_det(det, dx, dy, nw, nh, iw, ih):
+    """Map a letterboxed model-space detection to stretched iw x ih space."""
+    sx, sy = iw / float(nw), ih / float(nh)
+    def mx(v):
+        return float(np.clip((v - dx) * sx, 0, iw))
+    def my(v):
+        return float(np.clip((v - dy) * sy, 0, ih))
+    x1, y1, x2, y2, name, conf = det[:6]
+    poly = det[6] if len(det) > 6 else None
+    if poly:
+        poly = [[int(mx(px)), int(my(py))] for px, py in poly]
+    mask_px = int((det[7] if len(det) > 7 else 0) * sx * sy)
+    return [mx(x1), my(y1), mx(x2), my(y2), name, conf, poly, mask_px]
+
+
 def run_inference_on_network(frame_bgr, entry):
     """Run inference on one loaded HEF. Returns list of detections."""
     network_group = entry["group"]
@@ -1327,8 +1422,18 @@ def run_inference_on_network(frame_bgr, entry):
         return []
 
     try:
-        img = cv2.resize(frame_bgr, (iw, ih))
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Letterbox (keep aspect, pad gray) like YOLO training. Stretching the
+        # 4:3 frame to a square squashed worms/whiteflies by 33%.
+        fh, fw = frame_bgr.shape[:2]
+        r = min(iw / float(fw), ih / float(fh))
+        nw, nh = max(1, int(round(fw * r))), max(1, int(round(fh * r)))
+        dx, dy = (iw - nw) // 2, (ih - nh) // 2
+        img = np.full((ih, iw, 3), 114, dtype=np.uint8)
+        img[dy:dy + nh, dx:dx + nw] = cv2.resize(frame_bgr, (nw, nh))
+        # "swapped": hand over BGR bytes as RGB so the model sees the teal
+        # colours it was trained and calibrated on (see MODEL_COLOR_ORDER).
+        order = entry.get("color_order", "natural" if MODEL_COLOR_ORDER == "natural" else "swapped")
+        img_rgb = img if order == "swapped" else cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         input_data = np.expand_dims(img_rgb.astype(np.uint8), axis=0)
 
         input_name = input_info[0].name
@@ -1405,6 +1510,9 @@ def run_inference_on_network(frame_bgr, entry):
                                   f"mean best_detect.hef's class order doesn't match "
                                   f"DETECT_CLASS_NAMES={DETECT_CLASS_NAMES} — check names.json/labels used "
                                   f"at export time against that list.")
+                # Undo the letterbox into the stretched iw x ih convention that
+                # _map_crop_detection and detect_frame expect.
+                dets = [_unletterbox_det(d, dx, dy, nw, nh, iw, ih) for d in dets]
                 # rescale boxes from model size to 640-space so detect_frame scale stays simple
                 if iw != 640 or ih != 640:
                     sx, sy = 640.0 / iw, 640.0 / ih
@@ -1425,17 +1533,24 @@ def run_inference_on_network(frame_bgr, entry):
         # A failed inference is not a healthy frame with zero pests.
         raise RuntimeError(_infer_debug["last_err"]) from e
 
-def _inference_regions(width, height):
-    """Full frame plus bounded overlapping square crops in original coordinates."""
+def _inference_regions(width, height, grid=2):
+    """Full frame plus bounded overlapping square crops in original coordinates.
+
+    grid 2 (default): 4 crops of ~704 px. grid 3 (config.WHITEFLY_TILE_GRID,
+    DET only): 9 crops of ~491 px, smaller than the 640 model input, so tiny
+    whiteflies reach the model ~1.4x bigger."""
     regions = [(0, 0, width, height)]
-    if not SMALL_OBJECT_TILES or min(width, height) <= 640:
+    if not SMALL_OBJECT_TILES or min(width, height) <= 640 or grid < 2:
         return regions
-    size = min(min(width, height), max(640, int(np.ceil(max(width, height) / 2)) + 64))
+    floor = 640 if grid == 2 else 0
+    size = min(min(width, height), max(floor, int(np.ceil(max(width, height) / grid)) + 64))
     # No extra passes if cropping would not increase the object's model size.
     if size >= max(width, height):
         return regions
-    for y in (0, height - size):
-        for x in (0, width - size):
+    xs = sorted({round(i * (width - size) / (grid - 1)) for i in range(grid)})
+    ys = sorted({round(i * (height - size) / (grid - 1)) for i in range(grid)})
+    for y in ys:
+        for x in xs:
             region = (x, y, x + size, y + size)
             if region not in regions:
                 regions.append(region)
@@ -1466,6 +1581,21 @@ def _merge_region_detections(detections):
     return sorted(result, key=lambda d: d[5], reverse=True)[:MAX_DETECTIONS_PER_FRAME]
 
 
+def _inference_passes(models):
+    """One inference pass per (model, colour order); see MODEL_COLOR_ORDER.
+    The pest (DET) passes get config.WHITEFLY_TILE_GRID crops; fungus keeps 2x2."""
+    grid = getattr(config, "WHITEFLY_TILE_GRID", 2)
+    tiles = lambda entry: dict(entry, tile_grid=grid) if entry["label"] == "DET" and grid != 2 else entry
+    if MODEL_COLOR_ORDER != "split":
+        return [tiles(dict(entry, color_order=MODEL_COLOR_ORDER)) for entry in models]
+    by_label = {entry["label"]: entry for entry in models}
+    passes = [tiles(dict(by_label[label], color_order=order, keep_classes=keep, full_frame_only=full))
+              for label, order, keep, full in SPLIT_COLOR_PASSES if label in by_label]
+    covered = {label for label, *_ in SPLIT_COLOR_PASSES}
+    return passes + [tiles(dict(entry, color_order="swapped")) for entry in models
+                     if entry["label"] not in covered]
+
+
 def detect_frame(frame_bgr):
     """Run every loaded HEF and merge results."""
     global latest_detections
@@ -1477,16 +1607,23 @@ def detect_frame(frame_bgr):
     with hailo_swap_lock:
         snapshot = list(hailo_models)
         # Keep the device alive until all inference contexts have closed.
-        for entry in snapshot:
+        for entry in _inference_passes(snapshot):
             label = entry["label"]
-            class_scores[label] = {name: 0.0 for name in entry["class_names"]}
-            accepted_boxes[label] = {name: 0 for name in entry["class_names"]}
-            for index, region in enumerate(regions):
+            keep = entry.get("keep_classes")
+            class_scores.setdefault(label, {name: 0.0 for name in entry["class_names"]})
+            accepted_boxes.setdefault(label, {name: 0 for name in entry["class_names"]})
+            pass_regions = (_inference_regions(width, height, entry["tile_grid"])
+                            if entry.get("tile_grid") else regions)
+            for index, region in enumerate(pass_regions):
+                if index and entry.get("full_frame_only"):
+                    break
                 left, top, right, bottom = region
                 dets = run_inference_on_network(frame_bgr[top:bottom, left:right], entry)
                 for name, score in _infer_debug.get("class_scores", {}).get(label, {}).items():
                     class_scores[label][name] = max(class_scores[label][name], score)
                 for det in dets:
+                    if keep and det[4] not in keep:
+                        continue
                     # Preserve the existing full-frame worm path. Extra crops
                     # target the small fungus/whitefly issue specifically.
                     if index and det[4] not in ("fungus", "whiteflies", "whitefly"):
@@ -1589,10 +1726,172 @@ def init_camera():
 
 current_frame_meta = None
 
+
+class DevCamera:
+    """PC test mode stand-in for Picamera2: cycles the photos in a folder,
+    in natural colours, at the Pi's stream sizes (lores 1280x960, main 4056x3040)."""
+
+    SIZES = {"lores": (1280, 960), "main": (4056, 3040)}
+
+    def __init__(self, folder, seconds_per_photo=4.0):
+        self.frames = []
+        for path in sorted(Path(folder).glob("*")):
+            if path.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                continue
+            img = cv2.imread(str(path))
+            if img is None:
+                continue
+            if "auto_default" in path.name:      # old capture bug: red/blue reversed
+                img = np.ascontiguousarray(img[:, :, ::-1])
+            self.frames.append(img)
+        if not self.frames:
+            self.frames = [np.full((960, 1280, 3), (60, 160, 80), np.uint8)]
+        self.seconds_per_photo = seconds_per_photo
+        self.started = time.monotonic()
+
+    def capture_array(self, stream="lores"):
+        index = int((time.monotonic() - self.started) / self.seconds_per_photo) % len(self.frames)
+        time.sleep(0.03)
+        return cv2.resize(self.frames[index], self.SIZES.get(stream, self.SIZES["lores"]))
+
+    def stop(self):
+        pass
+
+    def close(self):
+        pass
+
+
+# Full-resolution photo capture for building datasets. At 1280x960 a whitefly
+# is a 5-12 px speck that looks like glare; the 4056x3040 main stream shows it
+# ~3x wider. Requests are served from the capture thread, which owns the camera.
+CAPTURE_DIR = Path(config.CAPTURE_DIR)
+full_capture_requests = queue.Queue()
+# Burst progress for the app's Taking Datasets page.
+capture_status = {"running": False, "done": 0, "total": 0, "last": None, "error": None}
+capture_status_lock = threading.Lock()
+
+
+def _take_full_capture(request):
+    """Save one main-stream frame; natural colours, named field_full_<time>.
+    Also writes a 400 px thumbnail and a JSON sidecar (station, position, note)."""
+    try:
+        frame = camera.capture_array("main")    # already OpenCV B,G,R order
+        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        path = CAPTURE_DIR / f"field_full_{now:%Y%m%d_%H%M%S_%f}.jpg"
+        if not cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]):
+            raise RuntimeError("could not write the photo")
+        request["path"], request["size"] = str(path), [int(frame.shape[1]), int(frame.shape[0])]
+        request["name"] = path.name
+        try:
+            (CAPTURE_DIR / "thumbs").mkdir(exist_ok=True)
+            h, w = frame.shape[:2]
+            thumb = cv2.resize(frame, (400, max(1, int(h * 400 / w))), interpolation=cv2.INTER_AREA)
+            cv2.imwrite(str(CAPTURE_DIR / "thumbs" / path.name), thumb, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            meta = {k: request.get(k) for k in ("station", "position", "note")}
+            meta.update(time=now.timestamp(), size=request["size"])
+            path.with_suffix(".json").write_text(json.dumps(meta))
+        except Exception as e:                  # the photo itself is saved; extras are best effort
+            print(f"⚠ Capture thumbnail/sidecar: {e}")
+    except Exception as e:
+        request["error"] = str(e)
+    finally:
+        request["done"].set()
+
+
+def _capture_request(station=None, position=None, note=""):
+    """Queue one full-resolution photo for the capture thread; wait for it.
+    Station/position default to where the scan says the camera is."""
+    if station is None and position is None and coordinator.get_shared_state().get("scan_state"):
+        scan = coordinator.get_shared_state()["scan_state"] or {}
+        if scan.get("running"):
+            station, position = scan.get("station"), scan.get("position")
+    request = {"done": threading.Event(), "station": station, "position": position, "note": note or ""}
+    full_capture_requests.put(request)
+    if not request["done"].wait(10.0):
+        request["error"] = "Camera did not answer in 10 s"
+    return request
+
+
+def capture_state():
+    with capture_status_lock:
+        state = dict(capture_status)
+    state["storage"] = storage_state()
+    return state
+
+
+def start_burst(count, interval_s, station=None, position=None, note=""):
+    """Take `count` photos `interval_s` apart in the background."""
+    if camera is None:
+        raise RuntimeError("Camera is not running")
+    with capture_status_lock:
+        if capture_status["running"]:
+            raise RuntimeError("A burst is already running")
+        capture_status.update(running=True, done=0, total=count, error=None)
+
+    def run():
+        try:
+            for i in range(count):
+                result = _capture_request(station, position, note)
+                with capture_status_lock:
+                    if "error" in result:
+                        capture_status["error"] = result["error"]
+                        break
+                    capture_status.update(done=i + 1, last=result["name"])
+                if i + 1 < count and stop_event.wait(interval_s):
+                    break
+        finally:
+            with capture_status_lock:
+                capture_status["running"] = False
+
+    threading.Thread(target=run, daemon=True, name="capture-burst").start()
+
+
+# Sharp crops for the whitefly classifier (wf_classifier.py): the verifier
+# asks for all whitefly candidates of a frame at once; the capture thread,
+# which owns the camera, cuts them from the next 4056x3040 main frame.
+zoom_requests = queue.Queue()
+
+
+def zoom_crops(boxes, timeout=0.6):
+    """96x96 crops around lores boxes from the main stream, or None (timeout,
+    no camera): the verifier then uses the 1280x960 frame. The camera stands
+    still during a scan window, so the next frame shows the same view."""
+    if not boxes or camera is None:
+        return None
+    request = {"boxes": [tuple(b) for b in boxes], "done": threading.Event(), "crops": None}
+    zoom_requests.put(request)
+    return request["crops"] if request["done"].wait(timeout) else None
+
+
+def _serve_zoom(request):
+    from wf_classifier import crop_window
+    try:
+        if hasattr(camera, "capture_request"):
+            # Only the small windows are copied out of the 37 MB frame.
+            frame_request = camera.capture_request()
+            try:
+                with MappedArray(frame_request, "main") as mapped:
+                    request["crops"] = [crop_window(b, mapped.array) for b in request["boxes"]]
+            finally:
+                frame_request.release()
+        else:                                    # DevCamera on the PC
+            main_frame = camera.capture_array("main")
+            request["crops"] = [crop_window(b, main_frame) for b in request["boxes"]]
+    except Exception as e:
+        print(f"📷 Whitefly zoom failed: {e}")
+    finally:
+        request["done"].set()
+
+
 def capture_frames():
     global current_frame, frame_sequence, frame_timestamp, current_frame_meta
     while not stop_event.is_set():
-        if camera and HAS_CAMERA:
+        if camera and (HAS_CAMERA or globals().get("DEV_MODE")):
+            while not full_capture_requests.empty():
+                _take_full_capture(full_capture_requests.get_nowait())
+            while not zoom_requests.empty():
+                _serve_zoom(zoom_requests.get_nowait())
             try:
                 # Picamera2 RGB888 arrays already have OpenCV's B,G,R byte order.
                 capture_started = time.monotonic()
@@ -1626,7 +1925,9 @@ def generate_mjpeg(max_width=None, fps=None, show_diagnostics=True):
             # scratch. Now a bad frame just gets skipped instead of taking
             # the whole stream down.
             try:
-                active_dets = list(display_detections) if display_detections else list(latest_detections)
+                # Filtered boxes only; an empty list means "nothing verified",
+                # not "draw the raw, unverified detections instead".
+                active_dets = list(display_detections)
                 for item in active_dets:
                     try:
                         x1, y1, x2, y2, label, color = item[:6]
@@ -1685,7 +1986,7 @@ def generate_mjpeg(max_width=None, fps=None, show_diagnostics=True):
                         continue
                 hud = (
                     f"NPU C:{int(comb_model_loaded)} S:{int(seg_model_loaded)} D:{int(det_model_loaded)} "
-                    f"objs:{len(display_detections) if display_detections else len(latest_detections)} max:{_infer_debug.get('max_score', 0):.2f} "
+                    f"objs:{len(active_dets)} max:{_infer_debug.get('max_score', 0):.2f} "
                     f"{current_state} S{active_station_id}"
                 )
                 if show_diagnostics:
@@ -1874,12 +2175,15 @@ def detect_loop():
                     raise
                 inference_diagnostics.record(sequence, meta, inference_started,
                     before_verification, dets, _infer_debug)
-                display_detections = coordinator.overlay(dets if (dets is not None and len(dets) > 0) else before_verification)
             else:
                 dets = None
-                display_detections = coordinator.overlay(before_verification)
-
-            eval_dets = dets if (dets is not None and len(dets) > 0) else before_verification
+            # Never fall back to raw boxes: the verifier rejecting everything
+            # (background "whitefly", black blob as fungus) must mean nothing.
+            # The live feed shows boxes that pass the per-frame gates; only
+            # temporally verified boxes in a scan window are counted.
+            display_detections = coordinator.overlay(
+                coordinator.display_filter(frame, before_verification, meta))
+            eval_dets = dets if (is_scanning and dets) else []
 
             pest_count = 0
             fungus_cov = 0.0
@@ -1936,26 +2240,16 @@ def detect_loop():
                 time.sleep(DETECTION_INTERVAL)
                 continue
 
-            # Spray immediately once 2 pest/fungus boxes are in this frame,
-            # OR the moment EITHER track independently reads "high" (e.g. a
-            # whitefly cluster, or a fungus patch crossing SEV_FUNGUS_HIGH_PCT)
-            # even if it didn't literally land 2 boxes in this exact frame.
-            now = time.time()
-            last_fire = float(_live_alerted.get(f"t{active_station_id}", 0) or 0)
-            if (total_hits >= SPRAY_MIN_HITS or pest_severity == "high" or fungus_severity == "high"
-                    or (_worse_severity(pest_severity, fungus_severity) == "medium" and _dwell_sightings >= SPRAY_MIN_HITS * 3)) \
-                    and (now - last_fire) >= PUMP_COOLDOWN:
-                _live_alerted[f"t{active_station_id}"] = now
-                snap = dict(window_best)
-                snap['_scan_id'] = meta.scan_id
-                snap["hits"] = max(total_hits, _dwell_hits_peak)
-                snap["dwell_sightings"] = _dwell_sightings
-                snap["pest"] = max(int(snap.get("pest", 0) or 0), pest_count)
-                sid = active_station_id
-                print(f"🚨 Live alert lettuce {sid}: {total_hits} hits, pest={pest_severity}, "
-                      f"fungus={fungus_severity} (need {SPRAY_MIN_HITS} or either=high)")
+            # Client rule (coordinator.take_spray_reason): spray once per lettuce
+            # visit as soon as >= 3 confirmed worms or whiteflies (upper + lower
+            # part together) or "high" fungus are found. Confirmed = seen in
+            # 3 of 5 frames by the verifier's tracker, so a one-frame speck
+            # never sprays.
+            reason = coordinator.take_spray_reason(meta.station)
+            if reason:
+                print(f"🚨 Lettuce {meta.station}: {reason}")
                 threading.Thread(
-                    target=apply_severity_actions, args=(sid, snap), daemon=True
+                    target=spray_all, args=(meta.station, reason, meta.scan_id), daemon=True
                 ).start()
 
             now = time.time()
@@ -2017,6 +2311,9 @@ esp32_last_err = ""     # last ESP32 failure reason (for /api/pump/status)
 def esp32_cmd(command, timeout=3.0, retries=2):
     """POST a text command to the ESP32 /cmd endpoint (non-blocking jobs on ESP)."""
     global esp32_last_ok, esp32_last_err
+    if globals().get("DEV_MODE"):               # PC test mode: pretend the ESP32 said OK
+        esp32_last_ok = time.time()
+        return "OK:dev"
     url = f"http://{ESP32_IP}:{ESP32_PORT}/cmd"
     for attempt in range(retries + 1):
         try:
@@ -2031,6 +2328,9 @@ def esp32_cmd(command, timeout=3.0, retries=2):
                 body = body.strip()
                 if body == "OK" or body.startswith("OK:"):
                     esp32_last_ok = time.time()
+                    monitor = globals().get("esp32_monitor")
+                    if monitor is not None:
+                        monitor.note_ok()
                     return body
                 esp32_last_err = f"unexpected reply: {body[:40]!r}"
         except Exception as e:
@@ -2050,11 +2350,49 @@ def esp32_cmd_async(command):
     threading.Thread(target=esp32_cmd, args=(command,), daemon=True).start()
 
 
+esp32_monitor = None
+
+
+def _esp32_moved(ip):
+    """The monitor found the ESP32 at a new address: point everything at it."""
+    global ESP32_IP
+    ESP32_IP = config.ESP32_IP = ip      # SmsBroker / SmsRouter read config.ESP32_IP per request
+
+
+def _esp32_status_changed(up, detail):
+    """Phone notification when the pump/SMS unit stops or starts answering."""
+    if up:
+        coordinator.notify("ok", "Pump/SMS unit is back",
+                           f"The ESP32 answers again at {detail}. Spraying and SMS work again.")
+    else:
+        coordinator.notify("error", "Error: Pump/SMS unit not responding",
+                           "The ESP32 has not answered for 2 minutes. Spraying and SMS will not work "
+                           f"until it is back. ({detail})")
+
+
 def init_pump():
+    global esp32_monitor
     print(f"💧 Pump/SMS via ESP32 at http://{ESP32_IP}:{ESP32_PORT}")
     print(f"   Farmer SMS → {FARMER_PHONE}  (SIM800L SIM {SIM800L_PHONE})")
+    if DEV_MODE:
+        print("   (dev mode: ESP32 simulated)")
+        return
+    from esp32_discovery import Esp32Monitor
+    esp32_monitor = Esp32Monitor(ESP32_IP, ESP32_PORT, get_ip_address,
+                                 save_path=config.ESP32_SAVED_IP, on_change=_esp32_moved,
+                                 on_status=_esp32_status_changed)
+    esp32_monitor.start()
     threading.Thread(target=_probe_esp32, daemon=True).start()
     threading.Thread(target=lambda: esp32_cmd("PUMP_OFF"), daemon=True).start()
+
+
+def esp32_state():
+    if DEV_MODE:
+        return {"ip": "dev", "reachable": True, "scanning": False, "last_ok": time.time(), "last_error": ""}
+    if esp32_monitor is not None:
+        return esp32_monitor.state()
+    return {"ip": ESP32_IP, "reachable": time.time() - esp32_last_ok < 30.0, "scanning": False,
+            "last_ok": esp32_last_ok or None, "last_error": esp32_last_err}
 
 
 def _probe_esp32():
@@ -2099,7 +2437,7 @@ def send_sms_alert(alert_type, station, message, force=False):
             return
         sms_cooldown[cooldown_key] = now
     # SIM800L GSM alphabet — strip unicode dashes/emoji
-    raw = f"FarmCam L{station} {alert_type}: {message}"
+    raw = message           # already the farmer's whole text (see _spray_sms)
     text = "".join(ch if 32 <= ord(ch) < 127 else " " for ch in raw)
     text = " ".join(text.split())[:140]
     print(f"📱 SMS payload: {text}")
@@ -2108,7 +2446,7 @@ def send_sms_alert(alert_type, station, message, force=False):
     # Never retry manual notifications and risk sending duplicates.
     attempts = 1 if alert_type == "MANUAL_PUMP" else 3
     for attempt in range(attempts):
-        ok = esp32_cmd("SMS:" + text, timeout=15.0)
+        ok = esp32_cmd("SMS:" + text, timeout=15.0, retries=0)
         if ok is not None:
             print(f"📱 SMS queued on ESP32 ({ok})")
             return
@@ -2118,8 +2456,37 @@ def send_sms_alert(alert_type, station, message, force=False):
     print("📱 SMS FAILED — ESP32/SIM800L did not accept the command")
 
 
+def _found_text(reason):
+    """'AUTO: 3 whiteflies on Lettuce 2' -> '3 whiteflies found on Lettuce 2';
+    None for a spray started from the app."""
+    reason = str(reason)
+    if not reason.upper().startswith("AUTO:"):
+        return None
+    why = reason[5:].strip()
+    match = re.match(r"(\d+) (\w+) on (Lettuce \d+)$", why)
+    if match:
+        return f"{match[1]} {match[2]} found on {match[3]}"
+    match = re.match(r"fungus on [\d.]+% of (Lettuce \d+)$", why, re.IGNORECASE)
+    if match:
+        return f"Fungus found on {match[1]}"
+    return why[:1].upper() + why[1:]
+
+
+def _spray_text(seconds, reason):
+    """App notification: '3 whiteflies found on Lettuce 2. All lettuces were
+    sprayed.' (one pump run wets every lettuce)."""
+    found = _found_text(reason)
+    return f"{found}. All lettuces were sprayed." if found else "All lettuces were sprayed from the app."
+
+
+def _spray_sms(reason):
+    """The farmer's SMS: a short alert, no technical details."""
+    found = _found_text(reason)
+    return f"FarmCam alert: {found}. Spray done." if found else "FarmCam: Lettuces sprayed from the app."
+
+
 def _pump_worker(seconds, station, reason, send_sms_after=True):
-    global pump_active
+    global pump_active, _spray_shown_until
     with pump_lock:
         if pump_active:
             print("💧 Pump already running — skip")
@@ -2139,11 +2506,14 @@ def _pump_worker(seconds, station, reason, send_sms_after=True):
             print("💧 PUMP_ON failed after retries")
             return
         started = True
+        _spray_shown_until = time.time() + SPRAY_POPUP_S
         try:
             with open(LAST_PUMP_FILE, "w") as f:
                 f.write(datetime.now().isoformat())
         except Exception:
             pass
+        spray_text = _spray_text(seconds, reason)
+        coordinator.notify("spray", "Pesticide sprayed", spray_text, station)
         time.sleep(seconds)
     finally:
         for attempt in range(5):
@@ -2157,7 +2527,7 @@ def _pump_worker(seconds, station, reason, send_sms_after=True):
         print("💧 PUMP OFF")
         # Send SMS confirming the pump fired
         if send_sms_after and started:
-            sms_text = f"Sprayed {seconds:.0f}s ({reason})"
+            sms_text = _spray_sms(reason)
             threading.Thread(
                 target=send_sms_alert,
                 args=("PUMP", station, sms_text, True),
@@ -2174,50 +2544,37 @@ _live_alerted = {}
 _sprayed_this_visit = {}
 
 
-def apply_severity_actions(station, summary):
-    """Fire buzzer / pump / SMS from the worst PEST reading and the worst
-    FUNGUS reading seen in the 30+30 window — evaluated independently."""
-    pest_sev = summary.get("pest_severity") or summary.get("severity", "none")  # back-compat for old-shaped snaps
-    fungus_sev = summary.get("fungus_severity", "none")
-    sev = _worse_severity(pest_sev, fungus_sev)  # combined, for logging/rank-tracking only
-    desc = summary.get("desc", "")
-    has_fungus = summary.get("fungus", 0) > 0 or "fungus" in desc.lower()
-    has_pest = summary.get("pest", 0) > 0
+def duration_text(seconds):
+    """4 days 3 h / 5 h 12 min / 7 min, for logs and messages."""
+    seconds = max(0, int(seconds))
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    if days:
+        return f"{days} day{'s' if days != 1 else ''} {hours} h"
+    if hours:
+        return f"{hours} h {minutes} min"
+    return f"{max(1, minutes)} min"
 
-    print(f"⚖  Lettuce {station} window result: pest={pest_sev.upper()} fungus={fungus_sev.upper()} — {desc}")
-    hits = int(summary.get("hits") or 0)
-    sightings = int(summary.get("dwell_sightings") or 0)
 
-    # BUG FIX: this used to be a hard "hits >= SPRAY_MIN_HITS or bail" gate.
-    # "hits" only ever meant "2+ pest/fungus boxes in the SAME single video
-    # frame" — fine for a static fungus patch or a slow worm, but whiteflies
-    # are small and move constantly, so getting 2 of them confirmed in one
-    # exact frame is rare even during a real infestation. Meanwhile the
-    # dashboard's severity (HIGH/MEDIUM) is exactly what farmers look at to
-    # decide "should this have sprayed?" — so we now trust that same signal
-    # here instead of a stricter, invisible-to-the-user co-occurrence rule.
-    # Checked on EACH track independently — a fungus-only HIGH must spray
-    # just as reliably as a pest-only HIGH, not just when both line up.
-    should_spray = (
-        hits >= SPRAY_MIN_HITS
-        or pest_sev == "high" or fungus_sev == "high"
-        or (sev == "medium" and sightings >= SPRAY_MIN_HITS * 3)
-    )
-    if not should_spray:
-        print(f"💧 Not enough evidence yet (hits={hits}, sightings={sightings}, "
-              f"pest={pest_sev}, fungus={fungus_sev}) — no spray")
-        return
-
+def spray_all(station, reason, scan_id):
+    """One automatic pump run. The pump feeds every lettuce at once, so the
+    cooldown (PUMP_COOLDOWN_S, 7 days) is for the whole machine."""
     with manual_control_lock:
-        if not coordinator.automatic_ready(station, summary.get('_scan_id')):
+        if not coordinator.automatic_ready(station, scan_id):
+            print(f"💧 {reason}: scan window no longer valid, no spray")
             return
         if manual_pump_on or pump_active:
             return
         cm = coordinator.get_shared_state().get('cooldown_mgr')
-        if cm is None or not cm.claim('pump', config.PUMP_COOLDOWN_S):
+        if cm is None:
+            return
+        if not cm.claim('pump', config.PUMP_COOLDOWN_S):
+            left = cm.status('pump', config.PUMP_COOLDOWN_S)['remaining_s']
+            print(f"💧 {reason}: no spray, cooldown {duration_text(left)} left")
             return
         # A single worker owns the automatic cycle. Manual control cannot race it.
-        _pump_worker(config.PUMP_DURATION_S, station, sev.upper(), True)
+        _pump_worker(config.PUMP_DURATION_S, station, f"AUTO: {reason}", True)
 
 
 # ---------------------------------------------------------------------------
@@ -2309,8 +2666,12 @@ async def api_system():
         "buzzer_muted": (coordinator.get_shared_state()["buzzer_scheduler"].is_muted
                          if coordinator.get_shared_state()["buzzer_scheduler"] else True),
         "scan_state": coordinator.scan_state(),
-        "cooldowns": (coordinator.get_shared_state()["cooldown_mgr"].status_dict()
-                      if coordinator.get_shared_state().get("cooldown_mgr") else None),
+        # Full-screen pop-up on the HDMI monitor (display_server.py).
+        "activity": activity_state(),
+        # Was cooldown_mgr.status_dict(), which does not exist: /api/system
+        # failed with 500 whenever the coordinator was wired.
+        "cooldowns": cooldowns_payload(coordinator.get_shared_state()),
+        "esp32": esp32_state(),
         "subsystem_fault": coordinator.get_shared_state()["fault"],
         "stations": list(stations_data.values()),
         "state": current_state,
@@ -2517,8 +2878,34 @@ async def api_logs_for(sid: int):
     return get_history(sid, 40)
 
 
-@app.get("/api/pump/status")
-async def api_pump_status():
+def live_state():
+    """Confirmed detections of the current lettuce visit (app 'Detecting now')."""
+    return coordinator.live_state()
+
+
+MOVING_PHASES = ("MOVING_TO_STATION", "SETTLING")
+
+
+def activity_state(scan=None, now=None):
+    """What the machine is doing that gets the full-screen pop-up on the HDMI
+    monitor and in the app: spraying pesticide, or moving to a lettuce.
+    Detections never do. Spraying wins when both are true."""
+    now = time.time() if now is None else now
+    if pump_active or manual_pump_on or now < _spray_shown_until:
+        return {"kind": "spray", "title": "Spraying pesticide",
+                "body": "All lettuces are being sprayed."}
+    scan = coordinator.scan_state() if scan is None else scan
+    phase = (scan or {}).get("phase")
+    if phase == "RETURNING":
+        return {"kind": "moving", "title": "Returning to Lettuce 1",
+                "body": "The camera is going back to the first lettuce."}
+    if phase in MOVING_PHASES and (scan or {}).get("station"):
+        return {"kind": "moving", "title": f"Moving to Lettuce {scan['station']}",
+                "body": "The camera is moving to the next lettuce."}
+    return None
+
+
+def pump_state():
     last_pump = None
     try:
         if os.path.exists(LAST_PUMP_FILE):
@@ -2526,33 +2913,111 @@ async def api_pump_status():
                 last_pump = f.read().strip() or None
     except Exception:
         last_pump = None
+    esp = esp32_state()
     return {
         "active": pump_active,
         "running": pump_active,
+        "manual_hold": manual_pump_on,
         "last_pump": last_pump,
         "cooldown_secs": PUMP_COOLDOWN,
         "duration": PUMP_DURATION,
-        "esp32_ip": ESP32_IP,
-        "esp32_reachable": time.time() - esp32_last_ok < 10.0,
-        "esp32_last_ok": esp32_last_ok or None,
-        "esp32_last_error": esp32_last_err,
+        "esp32_ip": esp["ip"],
+        "esp32_reachable": esp["reachable"],
+        "esp32_last_ok": esp["last_ok"],
+        "esp32_last_error": esp["last_error"],
     }
 
 
+@app.get("/api/pump/status")
+async def api_pump_status():
+    return pump_state()
+
+
+def station_payloads():
+    return [_station_payload(i) for i in range(1, 5)]
+
+
+def health_state():
+    """Camera/detection health for the app (the HDMI display uses the same)."""
+    with frame_lock:
+        timestamp, present = frame_timestamp, current_frame is not None
+    snap = display_health.snapshot(timestamp, present, coordinator.get_shared_state())
+    return {
+        "camera_ok": snap["camera_frame_age_s"] is not None and snap["camera_frame_age_s"] < 3.0,
+        "detection_ok": snap["detection_loop_age_s"] is not None and snap["detection_loop_age_s"] < 5.0,
+        "camera_frame_age_s": snap["camera_frame_age_s"],
+        "detection_loop_age_s": snap["detection_loop_age_s"],
+        "models": [m["label"] for m in hailo_models],
+        "inference_error": _infer_debug["last_err"],
+        "dev_mode": DEV_MODE,
+    }
+
+
+@app.post("/api/capture/full")
+def api_capture_full(body: Optional[dict] = Body(None)):
+    """Save one full-resolution (4056x3040) photo for labelling.
+    Optional JSON body: {station: 1-4, position: "upper"|"lower", note}."""
+    if camera is None:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "Camera is not running"})
+    body = body or {}
+    station, position = body.get("station"), body.get("position")
+    if station is not None and station not in (1, 2, 3, 4):
+        return JSONResponse(status_code=422, content={"ok": False, "error": "station must be 1-4"})
+    if position not in (None, "upper", "lower"):
+        return JSONResponse(status_code=422, content={"ok": False, "error": "position must be upper or lower"})
+    request = _capture_request(station, position, str(body.get("note") or "")[:80])
+    if "error" in request:
+        status = 504 if "did not answer" in request["error"] else 500
+        return JSONResponse(status_code=status, content={"ok": False, "error": request["error"]})
+    with capture_status_lock:
+        capture_status["last"] = request["name"]
+    return {"ok": True, "name": request["name"], "path": request["path"], "size": request["size"]}
+
+
 @app.post("/api/pump/trigger")
-def api_pump_trigger():
-    """One-shot pump trigger (2.5s spray at current station)."""
+def api_pump_trigger(override: bool = False):
+    """One-shot pump trigger (2.5s spray). During the 7-day cooldown the app
+    must confirm first (override=1); the spray restarts the cooldown."""
     sid = active_station_id
+    blocked = _manual_spray_blocked(override)
+    if blocked is not None:
+        return blocked
     # Fail fast instead of reporting "accepted" when the ESP32 is offline.
     if not pump_active and esp32_cmd("PUMP_HEARTBEAT", timeout=1.5, retries=0) is None:
         return JSONResponse(status_code=503, content={
             "ok": False, "active": False,
             "error": f"ESP32 pump controller at {ESP32_IP} is not reachable. Check its IP and Wi-Fi.",
         })
+    _restart_pump_cooldown()
     threading.Thread(
         target=_pump_worker, args=(2.5, sid, "MANUAL_TRIGGER", True), daemon=True
     ).start()
     return {"ok": True, "active": pump_active, "station": sid, "message": "pump trigger accepted"}
+
+
+def _manual_spray_blocked(override):
+    """409 'cooldown' while automatic spraying is paused and the user has not
+    confirmed spraying anyway in the app."""
+    if override:
+        return None
+    cm = coordinator.get_shared_state().get("cooldown_mgr")
+    if cm is None:
+        return None
+    status = cm.status("pump", config.PUMP_COOLDOWN_S)
+    if not status["active"]:
+        return None
+    return JSONResponse(status_code=409, content={
+        "ok": False, "active": False, "error": "cooldown",
+        "remaining_s": status["remaining_s"], "last_spray": status["last_triggered_at"],
+        "message": f"Automatic spraying is paused for another {duration_text(status['remaining_s'])}.",
+    })
+
+
+def _restart_pump_cooldown():
+    """A manual spray counts as a spray: the 7-day cooldown starts again."""
+    cm = coordinator.get_shared_state().get("cooldown_mgr")
+    if cm is not None:
+        cm.record_fire("pump")
 
 
 # ─── Manual pump hold/release (app hold-to-spray button) ─────────
@@ -2599,10 +3064,11 @@ def _manual_pump_watchdog(generation):
 
 
 @app.post("/api/pump/hold")
-def api_pump_hold():
+def api_pump_hold(override: bool = False):
     """Start pump and keep it on until /api/pump/release is called.
     The app sends heartbeats to /api/pump/heartbeat while button is held.
-    If heartbeats stop for >3.5s, the pump auto-stops (safety)."""
+    If heartbeats stop for >3.5s, the pump auto-stops (safety).
+    During the 7-day cooldown the app must confirm first (override=1)."""
     global manual_pump_on, manual_pump_heartbeat, pump_active, _manual_pump_start_time, manual_pump_generation
     # Sync routes run in FastAPI thread pool so modem HTTP waits cannot
     # block incoming app heartbeats. Serialize start/stop with the watchdog.
@@ -2610,6 +3076,9 @@ def api_pump_hold():
         if manual_pump_on:
             manual_pump_heartbeat = time.time()
             return {"ok": True, "active": True, "already_on": True}
+        blocked = _manual_spray_blocked(override)
+        if blocked is not None:
+            return blocked
         with pump_lock:
             if pump_active:
                 return JSONResponse(status_code=409, content={"ok": False, "error": "Pump is already running"})
@@ -2630,6 +3099,7 @@ def api_pump_hold():
         manual_pump_heartbeat = time.time()
         _manual_pump_start_time = time.time()
         manual_pump_generation += 1
+        _restart_pump_cooldown()
         try:
             with open(LAST_PUMP_FILE, "w") as f:
                 f.write(datetime.now().isoformat())
@@ -2638,7 +3108,7 @@ def api_pump_hold():
         threading.Thread(target=_manual_pump_watchdog, args=(manual_pump_generation,), daemon=True).start()
         threading.Thread(
             target=send_sms_alert,
-            args=("MANUAL_PUMP", active_station_id, "Manual spray started via app"),
+            args=("MANUAL_PUMP", active_station_id, "FarmCam: Spraying started from the app."),
             daemon=True,
         ).start()
     print("[*] Manual pump HOLD started")
@@ -2934,6 +3404,8 @@ def restore_station_summaries(rows):
 
 from api_extensions import register_extensions
 register_extensions(app, coordinator.get_shared_state)
+from app_api import cooldowns_payload, register_app_api
+register_app_api(app, coordinator.get_shared_state, sys.modules[__name__])
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -2942,26 +3414,30 @@ def startup():
     print("=" * 60)
     print("  🌿 FarmCam Server v2.1 (Fixed Dual-Hailo)")
     print("  Lettuce Pest & Fungus Detection")
-    print(f"  Build: {SERVER_BUILD}; small-object crops: {SMALL_OBJECT_TILES}")
+    print(f"  Build: {SERVER_BUILD}; small-object crops: {SMALL_OBJECT_TILES}; model colours: {MODEL_COLOR_ORDER}; "
+          f"pest model: {config.PEST_MODEL}; fungus model: {config.FUNGUS_MODEL}; "
+          f"whitefly crops: {config.WHITEFLY_TILE_GRID}x{config.WHITEFLY_TILE_GRID}")
     print("=" * 60)
 
     acquire_instance_lock()
-    init_camera()
-    init_hailo_models()          # <-- FIXED dual model loader
-    if not hailo_models:
-        raise RuntimeError("No Hailo models loaded; detection cannot start. "
-                           "Error 74 means no free Hailo device. Check other FarmCam/Hailo "
-                           "processes and run hailortcli scan before restarting.")
+    if DEV_MODE:
+        global camera
+        camera = DevCamera(SCRIPT_DIR / "pictures")
+        print("🧪 DEV MODE: fake camera from rpi_server/pictures, no Hailo, simulated ESP32")
+    else:
+        init_camera()
+        init_hailo_models()          # <-- FIXED dual model loader
+        if not hailo_models:
+            raise RuntimeError("No Hailo models loaded; detection cannot start. "
+                               "Error 74 means no free Hailo device. Check other FarmCam/Hailo "
+                               "processes and run hailortcli scan before restarting.")
     init_pump()
     init_db()
     coordinator.wire(sys.modules[__name__])
 
-    if getattr(config, "AUTO_START_SCAN", True):
-        try:
-            coordinator.start_scan()
-            print("ðŸš€ Autonomous scan cycle started at boot")
-        except Exception as e:
-            print(f"âš ï¸ Could not auto-start scan: {e}")
+    # Scanning is started from the app (config.AUTO_START_SCAN is False):
+    # the motor runs separately and must be in position before a scan starts.
+    print("⏸  Scan idle - start it from the app (Controls > Start scan)")
 
     cam_thread = threading.Thread(target=capture_frames, daemon=True)
     worker_threads.append(cam_thread)
@@ -2971,7 +3447,8 @@ def startup():
     worker_threads.append(detect_thread)
     detect_thread.start()
 
-    register_farmer_hotspot()
+    if not DEV_MODE:
+        register_farmer_hotspot()
 
     viewer_thread = threading.Thread(target=start_viewer_server, daemon=True)
     viewer_thread.start()

@@ -13,7 +13,7 @@ import config
 
 class SmsBroker:
     def __init__(self, esp32_ip=None, esp32_port=None, clock_fn=None):
-        self._base = f'http://{esp32_ip or config.ESP32_IP}:{esp32_port or config.ESP32_PORT}'
+        self._ip, self._port = esp32_ip, esp32_port
         self._clock = clock_fn or time.time
         self._queue = queue.Queue(maxsize=20)
         self._lock = threading.Lock()
@@ -77,6 +77,12 @@ class SmsBroker:
                                 sent_at=self._clock() if ack['status'] == 'sent' else None)
         except (ValueError, TypeError):
             return
+
+    @property
+    def _base(self):
+        # Read on every request: esp32_discovery updates config.ESP32_IP when
+        # the hotspot gives the ESP32 a new address.
+        return f'http://{self._ip or config.ESP32_IP}:{self._port or config.ESP32_PORT}'
 
     def _request(self, path, body=None):
         req = urllib.request.Request(self._base + path, data=body,

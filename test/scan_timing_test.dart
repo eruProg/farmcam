@@ -8,8 +8,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:farmcam/widgets/scan_timing_card.dart';
 import 'package:farmcam/services/api_service.dart';
+import 'package:farmcam/core/theme.dart';
 import 'package:farmcam/data/app_state.dart';
-import 'package:farmcam/screens/setup_screen.dart';
 
 class ScanApi extends ApiService {
   ScanApi() : super(AppState());
@@ -55,37 +55,33 @@ void main() {
         .load();
   });
   setUp(() => SharedPreferences.setMockInitialValues({}));
-  testWidgets('home opens timing editor and returns to connection choices',
-      (tester) async {
+  testWidgets('timing editor renders in the dark theme', (tester) async {
     tester.view.physicalSize = const Size(400, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final boundary = GlobalKey();
     await tester.pumpWidget(MaterialApp(
-      theme: ThemeData(fontFamily: 'Inter', useMaterial3: true),
-      home: RepaintBoundary(key: boundary, child: const SetupScreen()),
+      theme: AppTheme.dark(),
+      home: Scaffold(
+          body: RepaintBoundary(
+              key: boundary,
+              child: const SingleChildScrollView(
+                  padding: EdgeInsets.all(16), child: ScanTimingCard()))),
     ));
     await tester.pumpAndSettle();
-    expect(find.text('Quick Connect'), findsOneWidget);
-    expect(find.byType(TextFormField), findsNothing);
+    expect(find.byKey(const ValueKey('return_s')), findsOneWidget);
+    expect(tester.takeException(), isNull);
     await tester.runAsync(() async {
       final image = await (boundary.currentContext!.findRenderObject()
               as RenderRepaintBoundary)
           .toImage();
       final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-      final file = File('.verification/timing/home-timing-button.png');
+      final file = File('.verification/timing/timing-dark.png');
       await file.parent.create(recursive: true);
       await file.writeAsBytes(bytes!.buffer.asUint8List());
       image.dispose();
     });
-    await tester.tap(find.text('Scan Timing'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('return_s')), findsOneWidget);
-    await tester.pageBack();
-    await tester.pumpAndSettle();
-    expect(find.text('Quick Connect'), findsOneWidget);
-    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
   Widget page({ApiService? api, double scale = 1, Key? boundary}) =>

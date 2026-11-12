@@ -2,8 +2,47 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../core/theme.dart';
 import '../services/api_service.dart';
 import '../data/scan_state_model.dart';
+
+/// Countdown line: the only part of the card that redraws 10× a second.
+class _LiveStatus extends StatefulWidget {
+  const _LiveStatus({required this.clock, required this.running});
+  final ScanStateModel clock;
+  final bool running;
+  @override
+  State<_LiveStatus> createState() => _LiveStatusState();
+}
+
+class _LiveStatusState extends State<_LiveStatus> {
+  Timer? _tick;
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (mounted && widget.running) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final clock = widget.clock;
+    return Text(
+        !clock.connected
+            ? 'Checking scan connection…'
+            : widget.running
+                ? 'Lettuce ${clock.state['station']} · ${clock.state['phase_label']} · ${clock.remaining.toStringAsFixed(1)} s'
+                : 'Ready to start',
+        style: const TextStyle(fontWeight: FontWeight.w600));
+  }
+}
 
 const timingDefaults = <String, String>{
   'scan_s': '60',
@@ -28,7 +67,9 @@ const timingLabels = <String, String>{
 
 class ScanTimingCard extends StatefulWidget {
   final ApiService? api;
-  const ScanTimingCard({super.key, this.api});
+  /// Called after start/stop so the rest of the app refreshes right away.
+  final VoidCallback? onCommand;
+  const ScanTimingCard({super.key, this.api, this.onCommand});
   @override
   State<ScanTimingCard> createState() => _ScanTimingCardState();
 }
@@ -40,7 +81,7 @@ class _ScanTimingCardState extends State<ScanTimingCard> {
       e.key: TextEditingController(text: e.value)
   };
   final _clock = ScanStateModel();
-  Timer? _pollTimer, _tickTimer;
+  Timer? _pollTimer;
   bool _loaded = false, _polling = false, _busy = false, _supported = false;
   String? _error;
   int _revision = 0;
@@ -54,9 +95,7 @@ class _ScanTimingCardState extends State<ScanTimingCard> {
     if (widget.api != null) {
       _poll();
       _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _poll());
-      _tickTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-        if (mounted) setState(() {});
-      });
+      // The countdown line ticks on its own (_LiveStatus); the form does not.
     }
   }
 
@@ -131,6 +170,7 @@ class _ScanTimingCardState extends State<ScanTimingCard> {
       if (!mounted) return;
       _clock.update(result, sent, _clock.now);
       setState(() {});
+      widget.onCommand?.call();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -147,7 +187,6 @@ class _ScanTimingCardState extends State<ScanTimingCard> {
   @override
   void dispose() {
     _pollTimer?.cancel();
-    _tickTimer?.cancel();
     for (final c in _controllers.values) {
       c.dispose();
     }
@@ -157,28 +196,25 @@ class _ScanTimingCardState extends State<ScanTimingCard> {
   @override
   Widget build(BuildContext context) {
     final active = _clock.state['settings'] as Map?;
+    final theme = Theme.of(context);
+    final farm = theme.extension<FarmColors>();
+    final accent = farm?.healthy ?? const Color(0xFF15803D);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-          color: Colors.white,
+          color: farm?.card ?? theme.colorScheme.surface,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFE4E4E7))),
+          border: Border.all(color: farm?.border ?? const Color(0xFFE4E4E7))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Scan timing',
-            style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+        Text('Scan timing',
+            style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
-        const Text(
+        Text(
             '1 Lower → Upper · 2 Upper → Lower\n3 Lower → Upper · 4 Upper → Lower',
-            style: TextStyle(color: Color(0xFF15803D), height: 1.6)),
+            style: TextStyle(color: accent, height: 1.6)),
         if (widget.api != null) ...[
           const SizedBox(height: 12),
-          Text(
-              !_clock.connected
-                  ? 'Checking scan connection…'
-                  : _running
-                      ? 'Lettuce ${_clock.state['station']} · ${_clock.state['phase_label']} · ${_clock.remaining.toStringAsFixed(1)} s'
-                      : 'Ready to start',
-              style: const TextStyle(fontWeight: FontWeight.w600)),
+          _LiveStatus(clock: _clock, running: _running),
           if (_running && active != null)
             ExpansionTile(
               tilePadding: EdgeInsets.zero,
@@ -238,15 +274,18 @@ class _ScanTimingCardState extends State<ScanTimingCard> {
           ],
         ),
         if (_error != null)
-          Text(_error!, style: const TextStyle(color: Colors.red)),
+          Text(_error!, style: TextStyle(color: farm?.pest ?? Colors.red)),
         if (widget.api != null) ...[
-          Text(_running
-              ? 'Stop scanning here and stop the separate motor controller separately.'
-              : 'Position the camera at lettuce 1 lower. Synchronize the separate motor controller when starting.'),
+          Text(
+              _running
+                  ? 'Stop scanning here and stop the separate motor controller separately.'
+                  : 'Position the camera at lettuce 1 lower. Synchronize the separate motor controller when starting.',
+              style: TextStyle(color: farm?.muted)),
           const SizedBox(height: 10),
           FilledButton(
             style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF15803D)),
+                backgroundColor: _running ? (farm?.pest ?? Colors.red) : accent,
+                foregroundColor: Colors.white),
             onPressed: !_loaded || !_supported || !_clock.connected || _busy
                 ? null
                 : () => _command(_running),

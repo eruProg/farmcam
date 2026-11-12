@@ -14,6 +14,8 @@ def browser_arguments(binary, profile):
             '--disable-session-crashed-bubble', '--disable-infobars',
             '--disable-pinch', '--overscroll-history-navigation=0',
             '--autoplay-policy=no-user-gesture-required',
+            # No "unlock keyring" password dialog when the display starts.
+            '--password-store=basic',
             '--user-data-dir=' + str(profile), 'http://127.0.0.1:8090/']
 
 

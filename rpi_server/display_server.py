@@ -122,6 +122,9 @@ class DisplayState:
             'buzzer_muted': system.get('buzzer_muted') if connected else None,
             'cooldowns': system.get('cooldowns') if connected else None,
             'sms_status': (self.sms or {}).get('status'),
+            'esp32_reachable': (system.get('esp32') or {}).get('reachable') if connected else None,
+            # Spraying / moving to a lettuce: the full-screen pop-up.
+            'activity': system.get('activity') if connected else None,
             'logs': self.logs, 'logs_available': self.logs_available,
             'logs_updated_at': self.logs_updated_at,
             'stream_active': relay.active,

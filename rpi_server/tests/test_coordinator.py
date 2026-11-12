@@ -44,6 +44,36 @@ def test_commit_once_at_end_and_snapshot_real_id(runtime):
     assert not c.accepts(meta)
     assert not c.accepts(replace(meta, scan_id='wrong'))
 
+def test_every_detection_gets_a_photo_after_the_first_eight_frames(runtime):
+    frame = np.zeros((200,400,3), np.uint8)
+    for i in range(12):                     # a new whitefly in each of 12 frames
+        runtime[0] = 100 + i
+        x = 10 + i * 30
+        c.handle_frame(frame,[[x,10,x+8,18,'whiteflies',.9]],c.capture_meta(i+1))
+    for second in range(12,30):
+        runtime[0] = 100 + second
+        c.handle_frame(frame,[],c.capture_meta(second+1))
+    runtime[0] = 130
+    c.tick()
+    calls = c._snap_writer.submit.call_args_list
+    assert c._db.get_tracks_page(page_size=50)['total'] == 12
+    assert len(calls) == 12 and all(call.args[0] is not None for call in calls)
+
+
+def test_close_up_preview_is_centred_and_kept_inside_the_frame():
+    from snapshot_writer import close_up
+    frame = np.zeros((960,1280,3), np.uint8)
+    frame[500:510, 600:610] = 255            # a 10 px whitefly
+    thumb = close_up(frame, [600,500,610,510,'whiteflies',.9])
+    assert thumb.shape == (240,320,3)
+    ys, xs = np.nonzero(thumb[:,:,0] > 128)
+    assert abs(xs.mean() - 160) < 6 and abs(ys.mean() - 120) < 6   # zoomed in, centred
+    assert xs.max() - xs.min() > 15                                 # bigger than in the frame
+    corner = close_up(frame, [0,0,10,10,'worm',.9])                  # at the frame edge
+    assert corner.shape == (240,320,3)
+    assert close_up(frame, None).shape == (240,320,3)
+
+
 def test_inference_crossing_boundary_is_discarded(runtime):
     meta = c.capture_meta(1)
     runtime[0] = 130

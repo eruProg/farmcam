@@ -64,6 +64,16 @@ function renderLogs(data) {
   text('logs-message', available ? 'No detections recorded' : everConnected ? 'Detection history unavailable' : 'Waiting for detection history');
   text('log-freshness', available ? 'Confirmed records' : rows.length ? 'History unavailable · last known records' : '');
 }
+// Full-screen pop-up: spraying pesticide or moving to a lettuce only.
+function renderActivity(activity) {
+  const show = Boolean(activity && activity.title);
+  $('activity').hidden = !show;
+  if (!show) return;
+  text('activity-title', activity.title);
+  text('activity-body', activity.body || '');
+  $('activity-icon-spray').toggleAttribute('hidden', activity.kind !== 'spray');
+  $('activity-icon-moving').toggleAttribute('hidden', activity.kind !== 'moving');
+}
 function synchronize(data, sent, received) {
   const next = data.scan;
   if (!data.connected || instance !== data.instance_id || (next && previousServerTime !== null && next.server_time < previousServerTime)) {
@@ -92,6 +102,8 @@ function render(data, sent, received) {
   text('pump', data.pump_active === null || !data.connected ? 'Unavailable' : data.pump_active ? 'Running' : pumpRemaining > 0 ? `Cooldown (${Math.ceil(pumpRemaining)}s)` : 'Ready');
   text('buzzer', data.buzzer_muted === null || !data.connected ? 'Unavailable' : data.buzzer_muted ? 'Muted' : 'On');
   text('sms', data.connected ? (smsRemaining > 0 ? `Cooldown (${Math.ceil(smsRemaining)}s)` : smsLabels[data.sms_status] || 'Ready') : 'Unavailable');
+  text('esp32', data.esp32_reachable === null || data.esp32_reachable === undefined || !data.connected ? 'Unavailable' : data.esp32_reachable ? 'Connected' : 'Searching');
+  renderActivity(data.connected ? data.activity : null);
   if (data.connected && (pumpRemaining > 0 || smsRemaining > 0)) {
     const parts = [];
     if (pumpRemaining > 0) parts.push(`Pump: ${Math.ceil(pumpRemaining)}s`);

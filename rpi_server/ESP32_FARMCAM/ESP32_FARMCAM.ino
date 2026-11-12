@@ -1,9 +1,17 @@
 /*
  * ============================================================
- *  FarmCam ESP32 — WiFi Hardware Bridge  v2.2
+ *  FarmCam ESP32 — WiFi Hardware Bridge  v2.3
  *  Hardware: ESP32 DevKit V1 + SIM800L EVB
  *            + 1x Relay Module + Active Buzzer
  * ============================================================
+ *
+ *  v2.3 FIXES (same commands as v2.2, the Pi needs no change):
+ *  - SMS recipient: "09916425163" was sent as "+09916425163", which the
+ *    network rejects. Local numbers starting with 0 now become +63...
+ *  - WiFi power saving off and auto-reconnect on: the Pi's /cmd requests
+ *    no longer wait for the radio to wake up (pump/SMS timeouts).
+ *  - The "FarmCam is on and ready." SMS is queued once WiFi has an address
+ *    (the IP is printed on the serial monitor, not texted to the farmer).
  *
  *  ARCHITECTURE (v2 — WiFi over USB Serial)
  *  ─────────────────────────────────────────
@@ -338,7 +346,9 @@ void initSIM800L() {
 void sendSMS(String message) {
   if (message.length() > 160) message = message.substring(0, 160);
   String recipient = String(FARMER_PHONE);
-  if (!recipient.startsWith("+")) recipient = "+" + recipient;
+  recipient.trim();
+  if (recipient.startsWith("0")) recipient = "+63" + recipient.substring(1);  // 09XXXXXXXXX -> +639XXXXXXXXX
+  else if (!recipient.startsWith("+")) recipient = "+" + recipient;
   String cmd = "AT+CMGS=\"" + recipient + "\"";
   String r;
   smsLastResult = "sending";
@@ -540,6 +550,9 @@ void connectWiFi() {
   Serial.print("[WiFi] Connecting to ");
   Serial.print(WIFI_SSID);
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname("farmcam-esp32");
+  WiFi.setSleep(false);          // answer the Pi immediately (no modem sleep)
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   int attempts = 0;
@@ -575,7 +588,7 @@ void setup() {
   buzzerOFF();
 
   Serial.println("==========================================");
-  Serial.println(" FarmCam ESP32 Bridge v2.2 (Manual pump + SMS fix + SMS receive) ");
+  Serial.println(" FarmCam ESP32 Bridge v2.3 (SMS number fix, WiFi no-sleep) ");
   Serial.println(" Pump=GPIO27  Buzzer=GPIO26              ");
   Serial.println(" SIM800L: TX2=GPIO17  RX2=GPIO16         ");
   Serial.println("==========================================");
@@ -594,8 +607,7 @@ void setup() {
   // 3. Init SIM800L
   initSIM800L();
 
-  // Queue boot SMS so setup() is not blocked if the network is weak
-  queueSMS(String("FarmCam Online! ESP32 IP: ") + WiFi.localIP().toString());
+  // The boot SMS is queued from loop() once WiFi has an address.
 
   // 5. Boot buzzer confirm — short double-beep
   _buzz(100, 80); _buzz(100, 0);
@@ -662,6 +674,12 @@ void loop() {
     // Do not block the HTTP server waiting for unsolicited modem text.
     // v2.2: this now also detects and formats incoming SMS (+CMT).
     serviceIncomingSMS();
+  }
+
+  // Boot SMS once WiFi is up (queued while the SIM registers).
+  static bool bootSmsQueued = false;
+  if (!bootSmsQueued && WiFi.status() == WL_CONNECTED) {
+    bootSmsQueued = queueSMS(String("FarmCam is on and ready."));
   }
 
   static unsigned long lastWifiRetry = 0;

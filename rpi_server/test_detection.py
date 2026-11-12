@@ -5,7 +5,11 @@ Requires numpy and OpenCV, like the server; never opens the camera or pump.
 """
 import ast
 from collections import deque
+from datetime import datetime
+import os
 from pathlib import Path
+import queue
+import tempfile
 import threading
 import types
 import unittest
@@ -15,23 +19,26 @@ import cv2
 import numpy as np
 
 
-def definitions():
-    source = ast.parse(Path(__file__).with_name("main.py").read_text(encoding="utf-8"))
+def definitions(pest_model="old"):
+    source = ast.parse(Path(__file__).with_name("main.py").read_text(encoding="utf-8-sig"))
     constants = {"CONFIDENCE_THRESHOLD", "NMS_IOU_THRESHOLD", "REG_MAX", "MIN_BOX_AREA",
                  "PER_CLASS_MIN_BOX_AREA", "MIN_MASK_AREA_PX", "MIN_MASK_FILL_RATIO",
                  "MAX_DETECTIONS_PER_FRAME", "MIN_ASPECT_RATIO", "MAX_ASPECT_RATIO",
-                 "PER_CLASS_THRESHOLDS", "CLASS_NAMES", "SERVER_BUILD"}
+                 "PER_CLASS_THRESHOLDS", "CLASS_NAMES", "SERVER_BUILD", "MODEL_COLOR_ORDER",
+                 "SPLIT_COLOR_PASSES", "DEV_MODE"}
     functions = {"_sigmoid", "_softmax", "_dfl_decode", "_valid_box", "_as_hwc",
                  "_maybe_sigmoid", "nms", "_summarize_outputs", "_decode_nms_tensor",
                  "_decode_hailo_nms", "postprocess_yolov8", "_mask_to_polygon_and_area",
                  "TemporalConsensus", "startup", "init_camera", "capture_frames",
                  "hailo_load_labels", "_record_class_scores", "_inference_regions",
-                 "_map_crop_detection", "_merge_region_detections", "detect_frame"}
+                 "_map_crop_detection", "_merge_region_detections", "detect_frame",
+                 "_unletterbox_det", "_inference_passes", "_take_full_capture"}
     nodes = [n for n in source.body if
              (isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in functions) or
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in constants
                                               for t in n.targets))]
-    ns = dict(np=np, cv2=cv2, deque=deque, _infer_debug={}, SMALL_OBJECT_TILES=True)
+    ns = dict(np=np, cv2=cv2, deque=deque, os=os, Path=Path, _infer_debug={}, SMALL_OBJECT_TILES=True,
+              config=types.SimpleNamespace(PEST_MODEL=pest_model, FUNGUS_MODEL="old", WHITEFLY_TILE_GRID=2))
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "main.py", "exec"), ns)
     return ns
 
@@ -83,6 +90,98 @@ class DetectionTests(unittest.TestCase):
         np.testing.assert_allclose(mapped[:4], [288, 256 * 640 / 960, 640, 640])
         self.assertEqual(mapped[6][-1], [640, 640])
         self.assertEqual(mapped[7], int(409600 * 704 / 1280 * 704 / 960))
+
+    def test_letterbox_maps_back_to_stretched_space(self):
+        # 1280x960 into 640x640: scaled to 640x480, padded 80 px top and bottom.
+        unbox = self.ns["_unletterbox_det"]
+        full = unbox([0, 80, 640, 560, "worm", 0.9, None, 0], 0, 80, 640, 480, 640, 640)
+        np.testing.assert_allclose(full[:4], [0, 0, 640, 640])
+        det = unbox([320, 320, 400, 400, "worm", 0.9, [[320, 80]], 100], 0, 80, 640, 480, 640, 640)
+        np.testing.assert_allclose(det[:4], [320, 320, 400, 320 * 640 / 480], rtol=1e-6)
+        self.assertEqual(det[6], [[320, 0]])
+        self.assertEqual(det[7], int(100 * 640 / 480))
+        # Boxes in the gray padding clip to the frame edge.
+        self.assertEqual(unbox([0, 0, 10, 40, "worm", 0.9], 0, 80, 640, 480, 640, 640)[3], 0)
+
+    def test_split_colour_passes_take_each_class_from_its_own_pass(self):
+        # Fake DET returns both classes every time; tag each box with the pass colour.
+        seen = []
+        def infer(frame, entry):
+            seen.append((entry["color_order"], frame.shape[1]))
+            mark = 0.9 if entry["color_order"] == "swapped" else 0.8
+            return [[300, 300, 306, 306, "whiteflies", mark, None, 0],
+                    [100, 100, 130, 110, "worm", mark, None, 0]]
+        self.ns.update(hailo_swap_lock=threading.Lock(), MODEL_COLOR_ORDER="split",
+                       hailo_models=[{"label": "DET", "class_names": ["whiteflies", "worm"]}],
+                       run_inference_on_network=infer, temporal=self.ns["TemporalConsensus"]())
+        frame = np.zeros((960, 1280, 3), dtype=np.uint8)
+        for _ in range(3):
+            result = self.ns["detect_frame"](frame)
+        by_class = {d[4]: d[5] for d in result}
+        self.assertEqual(by_class, {"whiteflies": 0.8, "worm": 0.9})   # natural / swapped
+        # Natural pass covers all 5 regions; the worm pass only the full frame.
+        self.assertEqual(seen[:6], [("natural", 1280)] + [("natural", 704)] * 4 + [("swapped", 1280)])
+
+    def test_grid_two_keeps_todays_crops(self):
+        self.assertEqual(self.ns["_inference_regions"](1280, 960), [
+            (0, 0, 1280, 960), (0, 0, 704, 704), (576, 0, 1280, 704),
+            (0, 256, 704, 960), (576, 256, 1280, 960)])
+        self.assertEqual(self.ns["_inference_regions"](1280, 960, 2), self.ns["_inference_regions"](1280, 960))
+
+    def test_grid_three_crops_are_smaller_and_cover_the_frame(self):
+        regions = self.ns["_inference_regions"](1280, 960, 3)
+        self.assertEqual(len(regions), 10)
+        coverage = np.zeros((960, 1280), dtype=np.uint8)
+        for x1, y1, x2, y2 in regions[1:]:
+            self.assertEqual(x2 - x1, y2 - y1)
+            self.assertLess(x2 - x1, 640)            # enlarged into the 640 model input
+            coverage[y1:y2, x1:x2] += 1
+        self.assertTrue(np.all(coverage > 0))
+        self.assertTrue(np.any(coverage > 1))
+
+    def test_grid_three_only_for_pest_model_and_worms_stay_full_frame(self):
+        ns = definitions(pest_model="natural")
+        ns["config"].WHITEFLY_TILE_GRID = 3
+        seen = []
+        def infer(frame, entry):
+            seen.append((entry["label"], frame.shape[1]))
+            if entry["label"] == "SEG":
+                return []
+            return [[300, 300, 306, 306, "whiteflies", 0.8, None, 0],
+                    [100, 100, 130, 110, "worm", 0.8, None, 0]]
+        ns.update(hailo_swap_lock=threading.Lock(), MODEL_COLOR_ORDER="split",
+                  hailo_models=[{"label": "DET", "class_names": ["whiteflies", "worm"]},
+                                {"label": "SEG", "class_names": ["fungus"]}],
+                  run_inference_on_network=infer, temporal=ns["TemporalConsensus"]())
+        ns["detect_frame"](np.zeros((960, 1280, 3), dtype=np.uint8))
+        self.assertEqual([s for s in seen if s[0] == "SEG"], [("SEG", 1280)] + [("SEG", 704)] * 4)
+        self.assertEqual([s for s in seen if s[0] == "DET"], [("DET", 1280)] + [("DET", 491)] * 9)
+        self.assertEqual(ns["_infer_debug"]["accepted_boxes"]["DET"]["worm"], 1)
+
+    def test_retrained_pest_model_uses_one_natural_pass(self):
+        # FARMCAM_PEST_MODEL=natural: both classes from one natural DET pass,
+        # worms still only from the full frame.
+        ns = definitions(pest_model="natural")
+        seen = []
+        def infer(frame, entry):
+            seen.append((entry["label"], entry["color_order"], frame.shape[1]))
+            if entry["label"] == "SEG":
+                return []
+            return [[300, 300, 306, 306, "whiteflies", 0.8, None, 0],
+                    [100, 100, 130, 110, "worm", 0.8, None, 0]]
+        ns.update(hailo_swap_lock=threading.Lock(), MODEL_COLOR_ORDER="split",
+                  hailo_models=[{"label": "DET", "class_names": ["whiteflies", "worm"]},
+                                {"label": "SEG", "class_names": ["fungus"]}],
+                  run_inference_on_network=infer, temporal=ns["TemporalConsensus"]())
+        frame = np.zeros((960, 1280, 3), dtype=np.uint8)
+        for _ in range(3):
+            result = ns["detect_frame"](frame)
+        self.assertEqual(seen[:10], [("SEG", "swapped", 1280)] + [("SEG", "swapped", 704)] * 4 +
+                         [("DET", "natural", 1280)] + [("DET", "natural", 704)] * 4)
+        self.assertEqual(len(seen), 30)          # 10 inferences per frame, no extra worm pass
+        self.assertEqual({d[4] for d in result}, {"whiteflies", "worm"})
+        # Crop copies of the worm were dropped, not merged into a second worm.
+        self.assertEqual(ns["_infer_debug"]["accepted_boxes"]["DET"]["worm"], 1)
 
     def test_duplicate_crop_boxes_do_not_inflate_pest_count(self):
         det = [10, 10, 20, 20, "whiteflies", 0.9, None, 0]
@@ -204,13 +303,32 @@ class DetectionTests(unittest.TestCase):
             return frame
         cam.capture_array.side_effect = capture
         self.ns.update(camera=cam, HAS_CAMERA=True, stop_event=event,
-                       frame_lock=threading.Lock(), frame_sequence=0,
+                       frame_lock=threading.Lock(), frame_sequence=0, full_capture_requests=queue.Queue(),
+                       zoom_requests=queue.Queue(),
                        coordinator=types.SimpleNamespace(capture_meta=Mock(return_value='stamp')),
                        time=types.SimpleNamespace(monotonic=lambda: 100.0))
         self.ns["capture_frames"]()
         np.testing.assert_array_equal(self.ns["current_frame"], frame)
         self.assertEqual(self.ns["frame_sequence"], 1)
         self.assertEqual(self.ns['current_frame_meta'], 'stamp')
+
+    def test_full_resolution_capture_saves_main_stream_photo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            full = np.zeros((3040, 4056, 3), dtype=np.uint8)
+            full[:64, :64] = (0, 0, 255)                     # red block in B,G,R order (JPEG-safe)
+            cam = Mock()
+            cam.capture_array.return_value = full
+            self.ns.update(camera=cam, CAPTURE_DIR=Path(tmp), datetime=datetime)
+            request = {"done": threading.Event()}
+            self.ns["_take_full_capture"](request)
+            cam.capture_array.assert_called_once_with("main")
+            self.assertTrue(request["done"].is_set())
+            self.assertEqual(request["size"], [4056, 3040])
+            self.assertTrue(Path(request["path"]).name.startswith("field_full_"))
+            saved = cv2.imread(request["path"])
+            self.assertEqual(saved.shape, (3040, 4056, 3))
+            self.assertGreater(saved[32, 32, 2], 200)          # still red: colours not swapped
+            self.assertLess(saved[32, 32, 0], 60)
 
 
 if __name__ == "__main__":

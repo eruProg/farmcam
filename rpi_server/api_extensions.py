@@ -39,6 +39,8 @@ import config
 
 log = logging.getLogger("farmcam.api_ext")
 
+SMS_TEST_TEXT = "FarmCam test: SMS alerts are working."
+
 
 class _MuteBody(BaseModel):
     muted: bool
@@ -158,21 +160,20 @@ def register_extensions(
 
     @app.get("/api/cooldowns")
     async def api_cooldowns():
-        state = get_state()
-        cm    = state.get("cooldown_mgr")
-        if cm is None:
+        from app_api import cooldowns_payload
+        payload = cooldowns_payload(get_state())
+        if payload is None:
             raise HTTPException(status_code=503, detail='Cooldown storage unavailable')
-        return {
-            "pump": cm.status("pump", config.PUMP_COOLDOWN_S),
-            "sms":  cm.status("sms",  config.SMS_COOLDOWN_S),
-            "buzzer_muted": state['buzzer_scheduler'].is_muted if state.get('buzzer_scheduler') else None,
-        }
+        return payload
 
     # ── SMS status ────────────────────────────────────────────────
 
     @app.get("/api/sms/status")
-    async def api_sms_status():
+    def api_sms_status():
         state  = get_state()
+        router = state.get("sms_router")
+        if router is not None:
+            return router.status()
         broker = state.get("sms_broker")
         if broker is not None:
             return broker.last_status()
@@ -181,10 +182,18 @@ def register_extensions(
     # ── SMS test ──────────────────────────────────────────────────
 
     @app.post("/api/sms/test")
-    async def api_sms_test(
+    def api_sms_test(
         phone: Optional[str] = FQuery(None, description="Target phone; defaults to FARMCAM_FARMER_PHONE"),
     ):
         state  = get_state()
+        router = state.get("sms_router")
+        if router is not None:
+            # Works with both ESP32 firmwares; v2.x texts its built-in number.
+            result = router.send(SMS_TEST_TEXT, to=phone)
+            if not result["ok"]:
+                raise HTTPException(status_code=503, detail=result["err"])
+            log.info("api_sms_test: queued via %s to %s", result["via"], result["to"])
+            return {"ok": True, "msg_id": result.get("id"), "to": result["to"], "via": result["via"]}
         broker = state.get("sms_broker")
         target = phone or config.FARMER_PHONE
         if not target:
@@ -193,7 +202,7 @@ def register_extensions(
         if broker is None:
             raise HTTPException(status_code=503, detail="SmsBroker not active")
         try:
-            msg_id = broker.send(target, "FarmCam SMS test OK")
+            msg_id = broker.send(target, SMS_TEST_TEXT)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         if not msg_id:
@@ -256,7 +265,8 @@ def register_extensions(
             # Actuation
             "pump_cooldown_s":      config.PUMP_COOLDOWN_S,
             "pump_duration_s":      config.PUMP_DURATION_S,
-            "spray_min_hits":       config.SPRAY_MIN_HITS,
+            "spray_whiteflies_min": config.SPRAY_WHITEFLIES_MIN,
+            "spray_worms_min":      config.SPRAY_WORMS_MIN,
             "sms_cooldown_s":       config.SMS_COOLDOWN_S,
             "sms_max_retries":      config.SMS_MAX_RETRIES,
             "buzz_min_interval_s":  config.BUZZ_MIN_INTERVAL_S,

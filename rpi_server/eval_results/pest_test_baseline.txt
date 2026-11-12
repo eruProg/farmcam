@@ -1,0 +1,161 @@
+﻿
+Evaluating whiteflies and worms/test with model colours 'split' ...
+   note: 640x426 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x547 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x343 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   25/149 images
+   50/149 images
+   75/149 images
+   100/149 images
+   125/149 images
+   note: 640x569 is not 4:3 like the Pi camera; scaled without stretching
+
+=== whiteflies and worms / test (149 images) / model colours: split ===
+
+whiteflies: 248 labelled objects, minimum confidence 0.50
+   precision  97.7%   recall  34.7%   F1  0.51   (found 86, false 2, missed 162)
+   missed because: model found nothing 79, gate: area 32, confidence below minimum 25, gate: hand 14, gate: pale 12
+   confidence sweep:  min   precision  recall   F1
+                     0.25     88.1%    44.8%   0.59  <- best F1
+                     0.30     88.1%    44.8%   0.59
+                     0.35     88.1%    44.8%   0.59
+                     0.40     88.1%    44.8%   0.59
+                     0.45     92.7%    41.1%   0.57
+                     0.50     97.7%    34.7%   0.51
+                     0.55     98.6%    28.6%   0.44
+                     0.60     97.8%    17.7%   0.30
+                     0.65    100.0%     3.2%   0.06
+                     0.70    100.0%     0.4%   0.01
+                     0.75      0.0%     0.0%   0.00
+                     0.80      0.0%     0.0%   0.00
+                     0.85      0.0%     0.0%   0.00
+
+worm: 395 labelled objects, minimum confidence 0.45
+   precision  95.7%   recall  96.2%   F1  0.96   (found 380, false 17, missed 15)
+   missed because: model found nothing 10, confidence below minimum 5
+   confidence sweep:  min   precision  recall   F1
+                     0.25     92.7%    97.0%   0.95
+                     0.30     93.4%    96.7%   0.95
+                     0.35     94.1%    96.7%   0.95
+                     0.40     94.8%    96.7%   0.96
+                     0.45     95.7%    96.2%   0.96
+                     0.50     96.4%    96.2%   0.96  <- best F1
+                     0.55     96.4%    95.7%   0.96
+                     0.60     97.4%    95.2%   0.96
+                     0.65     97.9%    94.2%   0.96
+                     0.70     98.1%    90.4%   0.94
+                     0.75     98.7%    78.2%   0.87
+                     0.80     98.8%    61.8%   0.76
+                     0.85     99.3%    37.0%   0.54
+
+Evaluating whiteflies and worms/test with model colours 'swapped' ...
+   note: 640x426 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x547 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x343 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   25/149 images
+   50/149 images
+   75/149 images
+   100/149 images
+   125/149 images
+   note: 640x569 is not 4:3 like the Pi camera; scaled without stretching
+
+=== whiteflies and worms / test (149 images) / model colours: swapped ===
+
+whiteflies: 248 labelled objects, minimum confidence 0.50
+   precision 100.0%   recall   3.6%   F1  0.07   (found 9, false 0, missed 239)
+   missed because: model found nothing 208, gate: area 15, confidence below minimum 9, gate: hand 7
+   confidence sweep:  min   precision  recall   F1
+                     0.25    100.0%     7.3%   0.14  <- best F1
+                     0.30    100.0%     7.3%   0.14
+                     0.35    100.0%     7.3%   0.14
+                     0.40    100.0%     7.3%   0.14
+                     0.45    100.0%     4.4%   0.08
+                     0.50    100.0%     3.6%   0.07
+                     0.55    100.0%     1.6%   0.03
+                     0.60    100.0%     0.8%   0.02
+                     0.65      0.0%     0.0%   0.00
+                     0.70      0.0%     0.0%   0.00
+                     0.75      0.0%     0.0%   0.00
+                     0.80      0.0%     0.0%   0.00
+                     0.85      0.0%     0.0%   0.00
+
+worm: 395 labelled objects, minimum confidence 0.45
+   precision  95.7%   recall  96.2%   F1  0.96   (found 380, false 17, missed 15)
+   missed because: model found nothing 10, confidence below minimum 5
+   confidence sweep:  min   precision  recall   F1
+                     0.25     92.7%    97.0%   0.95
+                     0.30     93.4%    96.7%   0.95
+                     0.35     94.1%    96.7%   0.95
+                     0.40     94.8%    96.7%   0.96
+                     0.45     95.7%    96.2%   0.96
+                     0.50     96.4%    96.2%   0.96  <- best F1
+                     0.55     96.4%    95.7%   0.96
+                     0.60     97.4%    95.2%   0.96
+                     0.65     97.9%    94.2%   0.96
+                     0.70     98.1%    90.4%   0.94
+                     0.75     98.7%    78.2%   0.87
+                     0.80     98.8%    61.8%   0.76
+                     0.85     99.3%    37.0%   0.54
+
+Evaluating whiteflies and worms/test with model colours 'natural' ...
+   note: 640x426 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x547 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x343 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   25/149 images
+   50/149 images
+   75/149 images
+   100/149 images
+   125/149 images
+   note: 640x569 is not 4:3 like the Pi camera; scaled without stretching
+
+=== whiteflies and worms / test (149 images) / model colours: natural ===
+
+whiteflies: 248 labelled objects, minimum confidence 0.50
+   precision  97.7%   recall  34.7%   F1  0.51   (found 86, false 2, missed 162)
+   missed because: model found nothing 81, gate: area 30, confidence below minimum 25, gate: hand 14, gate: pale 12
+   confidence sweep:  min   precision  recall   F1
+                     0.25     88.1%    44.8%   0.59  <- best F1
+                     0.30     88.1%    44.8%   0.59
+                     0.35     88.1%    44.8%   0.59
+                     0.40     88.1%    44.8%   0.59
+                     0.45     92.7%    41.1%   0.57
+                     0.50     97.7%    34.7%   0.51
+                     0.55     98.6%    28.6%   0.44
+                     0.60     97.8%    17.7%   0.30
+                     0.65    100.0%     3.2%   0.06
+                     0.70    100.0%     0.4%   0.01
+                     0.75      0.0%     0.0%   0.00
+                     0.80      0.0%     0.0%   0.00
+                     0.85      0.0%     0.0%   0.00
+
+worm: 395 labelled objects, minimum confidence 0.45
+   precision  97.3%   recall  72.2%   F1  0.83   (found 285, false 8, missed 110)
+   missed because: model found nothing 83, confidence below minimum 27
+   confidence sweep:  min   precision  recall   F1
+                     0.25     96.6%    78.2%   0.86  <- best F1
+                     0.30     96.5%    77.2%   0.86
+                     0.35     97.1%    75.4%   0.85
+                     0.40     97.0%    74.2%   0.84
+                     0.45     97.3%    72.2%   0.83
+                     0.50     97.5%    70.4%   0.82
+                     0.55     97.8%    68.9%   0.81
+                     0.60     98.1%    66.1%   0.79
+                     0.65     98.4%    61.8%   0.76
+                     0.70     99.1%    56.7%   0.72
+                     0.75    100.0%    49.9%   0.67
+                     0.80    100.0%    38.0%   0.55
+                     0.85    100.0%    24.8%   0.40
+
+Saved eval_results\pest_test_baseline.json

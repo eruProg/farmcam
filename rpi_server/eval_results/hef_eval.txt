@@ -1,0 +1,65 @@
+2026-10-22 19:15:17.587254: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2026-10-22 19:15:17.597167: I external/local_xla/xla/tsl/cuda/cudart_stub.cc:32] Could not find cuda drivers on your machine, GPU will not be used.
+2026-10-22 19:15:17.629300: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:477] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1792667717.678978   95885 cuda_dnn.cc:8310] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1792667717.697376   95885 cuda_blas.cc:1418] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+2026-10-22 19:15:17.757037: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+[info] No GPU chosen and no suitable GPU found, falling back to CPU.
+[warning] Cannot use graphviz, so no visualizations will be created
+Emulated Hailo-8L model ready (best_detect.har, warm-up 40 s)
+
+Evaluating pest/test on the emulated Hailo-8L ...
+   note: 640x547 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x343 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x569 is not 4:3 like the Pi camera; scaled without stretching
+   note: 640x640 is not 4:3 like the Pi camera; scaled without stretching
+   note: 480x640 is not 4:3 like the Pi camera; scaled without stretching
+   25/148 images
+   50/148 images
+   75/148 images
+   100/148 images
+   125/148 images
+
+=== pest / test (148 images) / Hailo-8L 8-bit emulation ===
+
+whiteflies: 167 labelled objects, minimum confidence 0.60
+   precision  95.6%   recall  38.9%   F1  0.55   (found 65, false 3, missed 102)
+   missed because: confidence below minimum 49, model found nothing 35, gate: area 12, gate: pale 6
+   per photo: TP 7  FP 0  TN 137  FN 4  |  accuracy 97.3%  sensitivity 63.6%  specificity 100.0%
+   confidence sweep:  min   precision  recall   F1
+                     0.25     87.7%    68.3%   0.77
+                     0.30     87.7%    68.3%   0.77
+                     0.35     87.7%    68.3%   0.77
+                     0.40     87.7%    68.3%   0.77
+                     0.45     90.5%    68.3%   0.78  <- best F1
+                     0.50     91.7%    66.5%   0.77
+                     0.55     96.7%    52.1%   0.68
+                     0.60     95.6%    38.9%   0.55
+                     0.65     95.2%    12.0%   0.21
+                     0.70    100.0%     7.8%   0.14
+                     0.75    100.0%     1.2%   0.02
+                     0.80      0.0%     0.0%   0.00
+                     0.85      0.0%     0.0%   0.00
+
+worm: 395 labelled objects, minimum confidence 0.65
+   precision  97.6%   recall  92.9%   F1  0.95   (found 367, false 9, missed 28)
+   missed because: model found nothing 14, confidence below minimum 14
+   per photo: TP 127  FP 0  TN 19  FN 2  |  accuracy 98.6%  sensitivity 98.4%  specificity 100.0%
+   confidence sweep:  min   precision  recall   F1
+                     0.25     95.7%    95.9%   0.96  <- best F1
+                     0.30     95.7%    95.9%   0.96
+                     0.35     95.7%    95.9%   0.96
+                     0.40     95.7%    95.4%   0.96
+                     0.45     95.9%    95.4%   0.96
+                     0.50     96.6%    94.9%   0.96
+                     0.55     97.1%    94.4%   0.96
+                     0.60     97.4%    93.7%   0.95
+                     0.65     97.6%    92.9%   0.95
+                     0.70     97.8%    91.1%   0.94
+                     0.75     98.0%    85.8%   0.91
+                     0.80     98.8%    62.0%   0.76
+                     0.85     98.8%    41.5%   0.58
